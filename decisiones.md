@@ -1,0 +1,30 @@
+# Decisiones — TP1
+
+## 1. Por qué Git no pudo resolver el conflicto solo
+
+**Qué pasó exactamente.** Las dos ramas de trabajo nacieron del mismo commit de `main`  y las dos reescribieron la línea 1 del `README.md`, cada una con un título distinto. Cuando se integró `feature/titulo-a` (PR #2), `main` pasó a tener "versión A". Al intentar integrar `feature/titulo-b` (PR #3), Git ejecutó un merge de tres vías: comparó las dos puntas contra el ancestro común y encontró que ambas habían modificado la misma línea, respecto de ese ancestro, de forma divergente.
+
+Ahí Git se detiene, y no por una limitación que un algoritmo más sofisticado pudiera superar: Git compara texto, no interpreta su significado. No existe ninguna regla mecánica que le permita decidir si el título correcto es "versión A" o "versión B", porque esa respuesta no está en los archivos sino en la decisión del equipo. Lo único honesto que puede hacer es escribir las dos versiones, marcar dónde empieza y termina cada una con `<<<<<<<`, `=======` y `>>>>>>>`, y devolver la decisión a una persona. El conflicto no es un error: es Git negándose a inventar una respuesta que no tiene.
+
+La prueba de que el criterio es "misma línea" y no "mismo archivo" está en la captura del editor de conflictos: la sección `## instalación`, en el mismo `README.md`, se fusionó sola. Ninguna de las dos ramas la tocó, así que no había nada que decidir.
+
+**Qué habría tenido que pasar para que nunca apareciera.** El camino más realista es integrar antes. Si `feature/titulo-b` hubiera hecho `git pull` de `main` después de mergear el PR #2 —o se hubiera creado recién ahí—, habría partido de un `main` que ya tenía "versión A", y su cambio habría sido una edición secuencial y no paralela: sin conflicto. Esa es la lógica detrás de integrar seguido a la rama principal; las ramas cortas no evitan los conflictos, los mantienen chicos. Un segundo camino es repartir el trabajo de modo que cada rama toque zonas distintas del archivo, donde Git fusiona sin preguntar. Y el fondo del asunto es que el conflicto de Git es el síntoma: la causa es que dos cambios incompatibles se tomaron sobre lo mismo sin coordinar previamente, y eso ninguna herramienta lo resuelve.
+
+Vale aclarar lo evidente: en este TP el conflicto se fabricó a propósito, siguiendo la guía. El objetivo no era evitarlo sino provocarlo en un entorno controlado, que es preferible a encontrárselo por primera vez en un repositorio de trabajo real.
+
+## 2. Qué problemas encontré y cómo los solucioné
+
+**a) El push directo a `main` rechazado.** Después de proteger la rama, hice un commit local y probé `git push` para confirmar que la protección funcionaba. Los objetos se transfirieron sin problema —autenticación y permisos de escritura estaban—, pero el servidor devolvió `GH006: Protected branch update failed` y `! [remote rejected] main -> main (protected branch hook declined)`. Lo que al principio me desconcertó es que el rechazo me alcanzaba a mí, que soy el dueño del repositorio: como activé *Do not allow bypassing the above settings*, la regla aplica también al administrador. En rigor no era un problema a resolver sino el resultado buscado —la prueba de que la protección funciona—, pero la reacción natural frente a un `error:` en rojo es querer dar vuelta la configuración, y acá el rojo era el éxito. Asumí el flujo correcto (trabajar en ramas, entrar a `main` por PR) y descarté el commit huérfano con `git reset --hard HEAD~1`.
+
+**b) GitHub tarda unos segundos en detectar el conflicto.** Inmediatamente después de mergear el PR #2, el PR #3 seguía figurando como *mergeable*. Recién unos segundos más tarde apareció el aviso *Merge conflicts* y el botón de merge quedó deshabilitado. Al principio me desconcertó que un PR "sano" se rompiera sin que yo tocara su rama, hasta que entendí que el estado de mergeabilidad se calcula contra el `main` del momento —y ese `main` se había movido— y que GitHub lo recalcula en segundo plano, no al instante. Esto importaba porque la captura del conflicto había que sacarla en ese momento exacto: si la tomaba apenas mergeado el PR #2, habría fotografiado una pantalla que todavía no mostraba el conflicto. La solución fue verificar el estado antes de capturar, no capturar y suponer.
+
+**c) La resolución del conflicto en sí.** Con el PR #3 ya marcado como conflictivo, entré al editor de conflictos de GitHub. El archivo mostraba las dos versiones separadas por los marcadores. Resolví a mano: elegí la versión que correspondía, eliminé las tres líneas de marcadores (`<<<<<<<`, `=======`, `>>>>>>>`) y marqué el archivo como resuelto para poder completar el merge. Verifiqué después que no quedara ningún marcador huérfano en el `README.md`, porque mientras quede uno el archivo no puede darse por resuelto.
+
+## 3. Declaración de uso de IA
+
+**Qué hice con ayuda de IA.** Usé asistencia de IA únicamente para redactar las descripciones que acompañan las capturas de pantalla presentadas como evidencia: es decir, para pasar a texto claro lo que se observa en cada screenshot, y para la redacción de este documento.
+
+**Qué hice yo.** Toda la ejecución de la guía la hice a mano, siguiendo el paso a paso del enunciado: proteger la rama `main`, crear y mergear los pull requests con squash, provocar el conflicto entre las dos ramas de título, y resolverlo eligiendo yo la versión final y borrando los marcadores. La decisión de contenido del conflicto —qué título quedaba— y el método de resolución —a mano, no con un botón automático— fueron míos. Las capturas las tomé yo de mi propia terminal y de mi sesión de GitHub.
+
+**Cómo verifiqué lo que la IA me devolvió.** Contrasté cada descripción redactada por la IA directamente contra la evidencia real: revisé que los hashes de commit, los nombres de rama, los mensajes de error y lo que se afirma que muestra cada pantalla coincidieran exactamente con lo que se ve en la captura y con lo que efectivamente ocurrió en mi terminal y en GitHub. Donde el texto no correspondía a la evidencia real, lo corregí antes de incorporarlo al informe.
+
