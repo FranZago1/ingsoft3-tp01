@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    # Valores dummy: el build de Next no necesita una DB real, pero Prisma y
+    # el arranque exigen que estas variables existan.
+    env:
+      DATABASE_URL: "postgresql://user:pass@localhost:5432/db?schema=public"
+      JWT_SECRET: "ci-dummy-secret"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Node 20 con cache de npm
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Instalar dependencias
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck (tsc --noEmit)
+        run: npm run typecheck
+
+      - name: Build de Next (incluye prisma generate)
+        run: npm run build
+
+      - name: Build de la imagen Docker (sin push)
+        run: docker build -t reserva-padel:ci .
+
+  # TODO: se activa en un TP posterior (tests de backend y frontend sin DB/server).
+  # test:
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - uses: actions/checkout@v4
+  #     - uses: actions/setup-node@v4
+  #       with:
+  #         node-version: 20
+  #         cache: npm
+  #     - run: npm ci
+  #     - run: npm test
