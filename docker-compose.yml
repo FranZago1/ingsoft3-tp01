@@ -1,32 +1,71 @@
+# Stack completo de ReservaPadel: base + backend + frontend.
+#
+# Arranque en frío:
+#     cp .env.example .env     (y editar DB_PASSWORD / JWT_SECRET)
+#     docker compose up -d
+#     → http://localhost:3000
+#
+# Los dos pasos son parte del diseño: los secretos NO viven en el repo.
+
 services:
   db:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: padel
-      POSTGRES_PASSWORD: padel
+      # La password entra por el .env de la raíz, que no se commitea.
+      # La sintaxis :? hace que el compose falle con un mensaje claro si falta.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?falta DB_PASSWORD, copiá .env.example a .env}
       POSTGRES_DB: padel
     ports:
+      # Publicado para poder desarrollar el backend nativo contra esta base.
       - "5432:5432"
     volumes:
-      - pgdata:/var/lib/postgresql/data
+      # Volumen NOMBRADO: es lo único que sobrevive a `docker compose down`.
+      # `down -v` lo borra y la base vuelve a nacer vacía (la recrean las
+      # migraciones + el seed del entrypoint del backend).
+      - db_data:/var/lib/postgresql/data
     healthcheck:
+      # pg_isready no dice "el proceso arrancó" sino "acepta conexiones".
       test: ["CMD-SHELL", "pg_isready -U padel -d padel"]
       interval: 5s
       timeout: 5s
       retries: 10
+      start_period: 10s
 
-  app:
-    build: .
+  backend:
+    build: ./backend
     environment:
-      # La app apunta al servicio `db` de esta red de Docker.
-      DATABASE_URL: "postgresql://padel:padel@db:5432/padel?schema=public"
-      JWT_SECRET: "secret-de-desarrollo-cambiar-en-prod"
-      NODE_ENV: "production"
+      # Host `db`: el nombre del servicio resuelve dentro de la red de compose.
+      DATABASE_URL: "postgresql://padel:${DB_PASSWORD}@db:5432/padel?schema=public"
+      JWT_SECRET: ${JWT_SECRET:?falta JWT_SECRET, copiá .env.example a .env}
+      PORT: 8080
+      NODE_ENV: production
+      # Sin TZ el container corre en UTC y las reglas de horario (08:00–23:00)
+      # y "sin reservas en el pasado" se evalúan contra otro reloj que el del
+      # navegador. Ver decisiones.md.
+      TZ: ${TZ:-America/Argentina/Cordoba}
+    ports:
+      - "8080:8080"
+    depends_on:
+      db:
+        # No arranca hasta que la base ACEPTA CONEXIONES, no apenas existe.
+        condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    environment:
+      # Destino del rewrite de /api/* definido en frontend/next.config.ts.
+      # El navegador nunca le pega directo al backend: siempre pasa por acá.
+      BACKEND_URL: "http://backend:8080"
+      NODE_ENV: production
+      TZ: ${TZ:-America/Argentina/Cordoba}
     ports:
       - "3000:3000"
     depends_on:
-      db:
+      backend:
+        # El backend tiene HEALTHCHECK, así que podemos esperar a que esté sano
+        # (migraciones aplicadas y seed corrido), no solo iniciado.
         condition: service_healthy
 
 volumes:
-  pgdata:
+  db_data:

@@ -8,11 +8,15 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
-    # Valores dummy: el build de Next no necesita una DB real, pero Prisma y
-    # el arranque exigen que estas variables existan.
+    # Orden: de lo más barato a lo más caro, para fallar cuanto antes.
+    # lint (segundos) → typecheck (segundos) → build → imágenes Docker (minutos).
     env:
+      # Valores dummy: ningún paso necesita una base real, pero las variables
+      # tienen que existir para que Prisma y el build no exploten.
       DATABASE_URL: "postgresql://user:pass@localhost:5432/db?schema=public"
       JWT_SECRET: "ci-dummy-secret"
+      BACKEND_URL: "http://localhost:8080"
+
     steps:
       - uses: actions/checkout@v4
 
@@ -21,23 +25,60 @@ jobs:
         with:
           node-version: 20
           cache: npm
+          # Dos proyectos, dos lockfiles: los dos alimentan la cache.
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
 
-      - name: Instalar dependencias
+      # ---------- backend ----------
+      - name: backend · npm ci
+        working-directory: backend
         run: npm ci
 
-      - name: Lint
+      - name: backend · lint
+        working-directory: backend
         run: npm run lint
 
-      - name: Typecheck (tsc --noEmit)
+      - name: backend · typecheck
+        working-directory: backend
         run: npm run typecheck
 
-      - name: Build de Next (incluye prisma generate)
+      - name: backend · build (prisma generate + tsc)
+        working-directory: backend
         run: npm run build
 
-      - name: Build de la imagen Docker (sin push)
-        run: docker build -t reserva-padel:ci .
+      # ---------- frontend ----------
+      - name: frontend · npm ci
+        working-directory: frontend
+        run: npm ci
 
-  # TODO: se activa en un TP posterior (tests de backend y frontend sin DB/server).
+      - name: frontend · lint
+        working-directory: frontend
+        run: npm run lint
+
+      - name: frontend · typecheck
+        working-directory: frontend
+        run: npm run typecheck
+
+      - name: frontend · build (next build standalone)
+        working-directory: frontend
+        run: npm run build
+
+      # ---------- imágenes ----------
+      # Se construyen para verificar que los Dockerfile siguen siendo válidos.
+      # NO se pushean: publicar en GHCR es un paso manual (ver
+      # docker-compose.registry.yml).
+      - name: Imagen del backend (sin push)
+        run: docker build -t reservapadel-backend:ci ./backend
+
+      - name: Imagen del frontend (sin push)
+        run: docker build -t reservapadel-frontend:ci ./frontend
+
+  # TODO TP4/TP5: 8 tests de backend + 4 de frontend, sin base de datos y sin
+  # servidor. Por eso las reglas viven en backend/src/services/ (funciones puras
+  # que reciben los datos ya consultados) y las validaciones del front en
+  # frontend/src/lib/validacion.ts. Cuando existan los tests, descomentar:
+  #
   # test:
   #   runs-on: ubuntu-latest
   #   steps:
@@ -46,5 +87,12 @@ jobs:
   #       with:
   #         node-version: 20
   #         cache: npm
-  #     - run: npm ci
-  #     - run: npm test
+  #         cache-dependency-path: |
+  #           backend/package-lock.json
+  #           frontend/package-lock.json
+  #     - name: backend · tests
+  #       working-directory: backend
+  #       run: npm ci && npm test
+  #     - name: frontend · tests
+  #       working-directory: frontend
+  #       run: npm ci && npm test
