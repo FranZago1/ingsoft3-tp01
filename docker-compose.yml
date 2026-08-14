@@ -1,0 +1,27 @@
+# Solo la base de datos, para desarrollar con el backend y el frontend nativos.
+#
+#     cp .env.example .env     (y editar DB_PASSWORD)
+#     docker compose up -d
+#
+# Contenerizar la app es trabajo del TP2.
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: padel
+      # La password entra por el .env de la raíz, que no se commitea.
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?falta DB_PASSWORD, copiá .env.example a .env}
+      POSTGRES_DB: padel
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U padel -d padel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  db_data:

@@ -1,0 +1,57 @@
+// Prisma + PostgreSQL. Ver DATABASE_URL en el entorno (.env / docker-compose).
+
+generator client {
+  provider = "prisma-client-js"
+  // native = desarrollo local. linux-musl-*-openssl-3.0.x = node:20-alpine en Docker
+  // (x64 para CI/Intel, arm64 para Apple Silicon).
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x", "linux-musl-arm64-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Rol {
+  admin
+  jugador
+}
+
+enum EstadoReserva {
+  pendiente
+  confirmada
+  cancelada
+}
+
+model User {
+  id        String    @id @default(cuid())
+  nombre    String
+  email     String    @unique
+  password  String // hash bcrypt
+  rol       Rol       @default(jugador)
+  reservas  Reserva[]
+  createdAt DateTime  @default(now())
+}
+
+model Cancha {
+  id        String    @id @default(cuid())
+  nombre    String    @unique
+  reservas  Reserva[]
+  createdAt DateTime  @default(now())
+}
+
+model Reserva {
+  id        String        @id @default(cuid())
+  fecha     DateTime // día de la reserva (medianoche, se usa junto a inicio/fin)
+  inicio    DateTime // fecha y hora de inicio
+  fin       DateTime // fecha y hora de fin
+  estado    EstadoReserva @default(pendiente)
+  usuario   User          @relation(fields: [usuarioId], references: [id])
+  usuarioId String
+  cancha    Cancha        @relation(fields: [canchaId], references: [id])
+  canchaId  String
+  createdAt DateTime      @default(now())
+
+  @@index([canchaId, inicio])
+  @@index([usuarioId])
+}

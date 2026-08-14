@@ -4,13 +4,22 @@ bin/
 obj/
 dist/
 build/
+.next/
+next-env.d.ts
+*.tsbuildinfo
 
 # secretos: NUNCA se versionan
 .env
 *.local
+
+# logs
+*.log
 
 # basura del sistema operativo y del editor
 .DS_Store
 Thumbs.db
 .vscode/
 .idea/
+
+# configuración local de Claude Code
+.claude/
