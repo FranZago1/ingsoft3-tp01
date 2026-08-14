@@ -7,39 +7,43 @@ Sistema de reservas de canchas de pádel para un club. Proyecto de la materia
 Stack: **Express + Prisma + PostgreSQL 15** (backend) · **Next.js 15 App Router +
 TypeScript + Tailwind** (frontend) · todo en TypeScript.
 
+> **Estado:** la aplicación está terminada y verificada. Contenerizarla (TP2), el CI
+> (TP4) y los tests (TP4/TP5) están pendientes.
+
 ---
 
-## Arranque en frío (dos comandos)
+## Cómo levantarla
 
-Requisito: Docker + Docker Compose. En una máquina limpia:
+Postgres en Docker; backend y frontend nativos, en dos terminales.
 
 ```bash
-cp .env.example .env      # ← editar DB_PASSWORD y JWT_SECRET
-docker compose up -d
+# 0. Variables de entorno
+cp .env.example .env               # editar DB_PASSWORD
+cp backend/.env.example backend/.env   # que la password coincida con la de arriba
+
+# 1. La base
+docker compose up -d db
+
+# 2. Backend (terminal 1)
+cd backend
+npm ci
+npx prisma migrate dev             # crea las tablas
+npm run seed                       # canchas + usuarios de prueba
+npm run dev                        # http://localhost:8080
+
+# 3. Frontend (terminal 2)
+cd frontend
+npm ci
+npm run dev                        # http://localhost:3000
 ```
 
 👉 **http://localhost:3000**
 
-Son **dos comandos y no uno a propósito**: el `.env` con los secretos no se commitea.
-Ver `decisiones.md`.
+El rewrite del frontend apunta por default a `http://localhost:8080`, así que en
+desarrollo no hace falta setear `BACKEND_URL`.
 
-El arranque no necesita ningún paso manual más: el entrypoint del backend aplica las
-migraciones y siembra los datos antes de levantar el server, y el frontend espera a que
-el backend esté sano.
-
-Para empezar de cero borrando la base:
-
-```bash
-docker compose down -v && docker compose up -d
-```
-
-### Levantar desde las imágenes publicadas (sin compilar)
-
-```bash
-docker compose -f docker-compose.registry.yml up -d
-```
-
-Baja `ghcr.io/franzago1/reservapadel-{backend,frontend}:v0.1.0` en vez de construir.
+Para empezar de cero borrando la base: `docker compose down -v && docker compose up -d db`
+(y volver a correr `migrate dev` + `seed`).
 
 ---
 
@@ -61,10 +65,10 @@ Cualquiera puede registrarse desde `/registro`; los usuarios nuevos son siempre
 ## Arquitectura
 
 ```
-navegador ──/api/*──▶ frontend (Next SSR, :3000) ──rewrite──▶ backend (Express, :8080) ──▶ db (Postgres, :5432)
+navegador ──/api/*──▶ frontend (Next SSR, :3000) ──rewrite──▶ backend (Express, :8080) ──▶ Postgres (:5432)
 ```
 
-Dos servicios separados. **El frontend no tiene lógica de negocio ni toca Prisma**:
+Dos proyectos separados. **El frontend no tiene lógica de negocio ni toca Prisma**:
 consume la API por rutas relativas `/api/...` y un rewrite en `frontend/next.config.ts`
 las reenvía a `BACKEND_URL`. El navegador nunca le habla al backend directamente.
 
@@ -73,6 +77,7 @@ backend/
   src/services/   reglas de negocio como funciones puras (sin Express, sin Prisma)
   src/routes/     handlers finitos: parsean, autentican, llaman al servicio, mapean a HTTP
   src/auth.ts     helper único de autenticación (bcrypt + JWT + cookie)
+  src/app.ts      arma la app de Express (sin listen, para poder testearla)
   prisma/         schema, migraciones y seed
 frontend/
   src/app/        las 5 pantallas
@@ -101,7 +106,7 @@ Todos los endpoints cuelgan de `/api` y están en el backend.
 
 | Método | Ruta | Auth | Qué hace |
 | --- | --- | --- | --- |
-| `GET` | `/api/health` | — | `{ status: "ok" }`, lo usan los healthchecks |
+| `GET` | `/api/health` | — | `{ status: "ok" }` |
 | `POST` | `/api/auth/registro` | — | Crea un jugador y abre sesión |
 | `POST` | `/api/auth/login` | — | Abre sesión |
 | `POST` | `/api/auth/logout` | — | Borra la cookie |
@@ -138,8 +143,7 @@ Errores, siempre con la forma `{ "error": "mensaje legible" }`:
    Recurso ajeno → 403.
 7. **Registro**: email único y válido, contraseña de mínimo 8 caracteres.
 
-Viven en `backend/src/services/` como funciones puras. Ver `evidencias.md` para las 18
-verificaciones por HTTP.
+Viven en `backend/src/services/` como funciones puras.
 
 ---
 
@@ -150,12 +154,8 @@ verificaciones por HTTP.
 | Variable | Descripción |
 | --- | --- |
 | `DB_PASSWORD` | Password del usuario `padel` de Postgres. **Obligatoria.** |
-| `JWT_SECRET` | Secret para firmar los JWT. **Obligatoria.** |
-| `TZ` | Zona horaria de los contenedores. Default `America/Argentina/Cordoba`. |
 
-Si falta alguna de las obligatorias, `docker compose up` corta con un mensaje claro.
-
-### Backend
+### Backend (`backend/.env`)
 
 | Variable | Descripción |
 | --- | --- |
@@ -167,39 +167,9 @@ Si falta alguna de las obligatorias, `docker compose up` corta con un mensaje cl
 
 | Variable | Descripción |
 | --- | --- |
-| `BACKEND_URL` | Destino del rewrite de `/api/*`. En compose: `http://backend:8080`. |
+| `BACKEND_URL` | Destino del rewrite de `/api/*`. Default `http://localhost:8080`. |
 
 Ver `.env.example` y `backend/.env.example`.
-
----
-
-## Desarrollo local (sin Docker para las apps)
-
-Postgres siempre en Docker; backend y frontend nativos, en dos terminales:
-
-```bash
-# 0. variables
-cp .env.example .env
-cp backend/.env.example backend/.env      # ajustar la password para que coincida
-
-# 1. solo la base
-docker compose up -d db
-
-# 2. backend  (terminal 1)
-cd backend
-npm ci
-npx prisma migrate dev
-npm run seed
-npm run dev                                # http://localhost:8080
-
-# 3. frontend (terminal 2)
-cd frontend
-npm ci
-npm run dev                                # http://localhost:3000
-```
-
-El rewrite del frontend apunta por default a `http://localhost:8080`, así que en
-desarrollo local no hace falta setear `BACKEND_URL`.
 
 ---
 
@@ -221,7 +191,7 @@ desarrollo local no hace falta setear `BACKEND_URL`.
 | Script | Qué hace |
 | --- | --- |
 | `npm run dev` | Server de desarrollo. |
-| `npm run build` | Build de producción (`output: "standalone"`). |
+| `npm run build` | Build de producción. |
 | `npm start` | Sirve el build. |
 | `npm run lint` | ESLint. |
 | `npm run typecheck` | `tsc --noEmit`. |
@@ -230,15 +200,13 @@ desarrollo local no hace falta setear `BACKEND_URL`.
 
 ## Tests
 
-**Todavía no hay tests: son el TP4/TP5.** Lo que sí está listo es la testeabilidad —
+**Todavía no hay tests: son el TP4/TP5.** Lo que sí está listo es la testeabilidad:
 reglas puras en `backend/src/services/`, validaciones puras en
-`frontend/src/lib/validacion.ts` y la app de Express montable sin `listen()`. El job
-`test` está comentado en `.github/workflows/ci.yml` esperando ese TP.
+`frontend/src/lib/validacion.ts` y la app de Express montable sin `listen()`.
 
 ---
 
-## Documentación del proyecto
+## Documentación
 
 - **`decisiones.md`** — el porqué de cada decisión técnica, escrito para la defensa
   oral. Incluye la declaración de **uso de IA**.
-- **`evidencias.md`** — salidas y capturas de los 4 puntos del TP2.

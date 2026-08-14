@@ -6,12 +6,9 @@ import path from "node:path";
 // de una SPA, pero acá no hace falta nginx porque el front es SSR y ya tiene
 // un server Node propio que puede proxear (ver decisiones.md).
 const nextConfig: NextConfig = {
-  // server.js autocontenido: imagen Docker mucho más chica.
-  output: "standalone",
-
-  // Anclamos la raíz del tracing a esta carpeta. Si no, Next la infiere
-  // buscando lockfiles hacia arriba y puede elegir un directorio padre, lo que
-  // cambia la estructura de .next/standalone y rompe el COPY del Dockerfile.
+  // Anclamos la raíz del proyecto a esta carpeta. Si no, Next la infiere
+  // buscando lockfiles hacia arriba y puede elegir un directorio padre (por
+  // ejemplo el home del usuario), lo que ensucia el build con advertencias.
   outputFileTracingRoot: path.join(__dirname),
 
   async rewrites() {

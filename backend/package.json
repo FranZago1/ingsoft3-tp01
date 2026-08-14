@@ -3,19 +3,22 @@
   "version": "0.1.0",
   "private": true,
   "scripts": {
-    "dev": "tsx watch src/index.ts",
+    "dev": "tsx watch --env-file=.env src/index.ts",
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
+    "seed": "prisma db seed"
+  },
+  "prisma": {
+    "//": "Se invoca via `prisma db seed` para que el CLI cargue el .env solo. Corriendo `node prisma/seed.mjs` directo, DATABASE_URL tiene que estar ya en el entorno.",
     "seed": "node prisma/seed.mjs"
   },
   "dependencies": {
     "@prisma/client": "^5.22.0",
     "bcryptjs": "^2.4.3",
     "express": "^4.21.2",
-    "jsonwebtoken": "^9.0.2",
-    "prisma": "^5.22.0"
+    "jsonwebtoken": "^9.0.2"
   },
   "devDependencies": {
     "@eslint/js": "^9.19.0",
@@ -24,6 +27,7 @@
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^20.17.16",
     "eslint": "^9.19.0",
+    "prisma": "^5.22.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
     "typescript-eslint": "^8.22.0"
