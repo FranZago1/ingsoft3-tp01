@@ -624,3 +624,122 @@ antes. En el segundo caso, una prueba de persistencia que se había reportado co
 exitosa no probaba nada, y hubo que rehacerla. Sirve como recordatorio de que el
 trabajo asistido por IA se defiende con evidencia reproducible, no con la confianza en
 lo que la herramienta dice que hizo.
+
+---
+
+## TP3 — Planificación ágil con GitHub Projects
+
+### Sprint de 2 semanas
+
+Es el default de la industria y es el que mejor se defiende acá. Dos semanas alcanzan
+para terminar algo entregable de punta a punta —una historia con su PR mergeado— y son
+lo bastante poco como para corregir el rumbo antes de que un error se vuelva caro.
+Además coincide con el ritmo real de la materia: los TP caen cada una o dos semanas,
+así que el sprint y la entrega quedan alineados en vez de cruzarse.
+
+Un sprint de una semana daría feedback más rápido, pero la ceremonia —planificar,
+revisar -- pesa demasiado en proporción y cualquier imprevisto se come el sprint
+entero. Uno de tres semanas aleja tanto el feedback que cuesta justificar por qué
+habría que esperar tanto para revisar el rumbo.
+
+### Límite de trabajo en progreso: 2
+
+El proyecto lo lleva **una sola persona**, así que el límite tiene que responder a
+cuántas cosas puede tener realmente en curso: más de dos significa que ninguna avanza,
+solo se acumulan a medio hacer.
+
+No es 1 porque el flujo tiene bloqueos legítimos que no dependen de mí: un PR esperando
+que termine el CI, una imagen construyéndose. Con límite 1 quedaría formalmente
+impedido de empezar nada mientras espero. Con 2 hay margen para eso y no para el
+multitasking.
+
+Lo importante del límite es entender qué hace y qué no: GitHub **no impide** pasarse,
+solo pone el contador de la columna en rojo. Es una señal, no una barrera. El valor
+está en que el desvío se ve, y quien lo supera tiene que decidir conscientemente si
+está bien.
+
+### Diagnóstico: la historia mal escrita
+
+> *"Como desarrollador quiero crear la tabla usuarios para guardar los datos."*
+
+**Por qué está mal escrita.** Tiene la forma de historia pero es una **tarea técnica**
+disfrazada: describe un paso de implementación, no valor para nadie. El "como
+desarrollador" es la pista — el desarrollador no es el usuario del producto, es quien
+lo construye. Y como no expresa ningún comportamiento observable, **no se puede
+verificar**: no hay forma de escribir un criterio de aceptación que diga qué tiene que
+poder hacer alguien cuando esté lista. Tampoco entrega valor por sí sola: una tabla
+vacía no le sirve a nadie hasta que algo la use.
+
+**Cómo la reescribiría.** Subiendo un nivel, hasta el comportamiento que la tabla
+habilita, y colgando de ahí la tabla como tarea:
+
+> *"Como jugador quiero registrarme con mi email y contraseña para poder reservar una
+> cancha a mi nombre."*
+>
+> Criterios de aceptación:
+> - [ ] Con email válido y contraseña de 8+ caracteres, la cuenta se crea y quedo logueado
+> - [ ] Un email ya registrado devuelve un error legible y no crea una cuenta duplicada
+> - [ ] La contraseña se guarda hasheada, nunca en texto plano
+
+Ahí sí hay un usuario real, un valor concreto y tres afirmaciones que se pueden
+comprobar. "Crear la tabla usuarios" pasa a ser una de sus tareas.
+
+### Por qué el bug va al costado y no colgando de una historia
+
+La jerarquía cuenta **lo que se planificó construir**: la épica es el objetivo, las
+historias el valor a entregar, las tareas los pasos. Un bug es un defecto de algo **ya
+entregado**, así que no formaba parte de ese plan y no pertenece al árbol. Colgarlo de
+la historia que lo originó tendría además un efecto feo: esa historia ya está cerrada
+y su barra de progreso pasaría a mentir.
+
+El criterio que ordena esto es *cuándo* aparece el defecto. Si aparece mientras la
+historia está en curso, no es un bug: es que la historia todavía no cumple sus
+criterios de aceptación, y se arregla dentro de la historia sin crear nada. Si aparece
+sobre algo ya entregado, ahí sí es un bug con issue propio. El bug de esta entrega
+—`/reservas` se queda con el listado vacío si el backend todavía no responde— es del
+segundo caso: se observó sobre la app del TP2, ya entregada.
+
+Vale aclarar que "al costado" es una **convención de trabajo, no una regla de la
+herramienta**: hay equipos que registran los defectos del sprint colgando de su
+historia para medir cuántos se les escapan, y en Azure Boards un Bug puede ser hijo de
+una Feature. Lo que importa es saber cuál se usa y por qué.
+
+### Sub-issues y no task-lists
+
+Los dos caminos existen, pero solo uno arma **jerarquía navegable**. Una task-list en
+el cuerpo (`- [ ] #9`) marca progreso pero no crea la relación padre-hijo: desde la
+tarea no se puede subir a su historia ni de ahí a la épica. Los sub-issues sí, y es lo
+que pide el TP. La épica muestra su historia con barra de progreso, y la historia sus
+dos tareas.
+
+### El PR cierra la TAREA, no la historia
+
+`Closes #9` referencia la tarea "escribir el workflow de build y tests", que es
+exactamente lo que ese PR implementa. Poner el número de la historia habría cerrado la
+historia con la mitad del trabajo sin hacer —falta publicar el reporte de tests como
+artefacto— y la trazabilidad quedaría mintiendo.
+
+La historia se cierra a mano cuando sus dos tareas estén hechas; el workflow del
+tablero mueve la tarjeta a Done al cerrarse el issue, pero **no cierra un padre porque
+se hayan cerrado sus hijos**.
+
+Dos detalles que hacen que esto funcione y que es fácil pasar por alto: `Closes #N`
+solo cierra si el PR apunta a la rama por defecto (`main`), y tiene que estar en la
+**descripción del PR** —no en un comentario posterior—, porque es lo que además deja el
+issue enlazado al PR que lo cerró.
+
+### Uso de IA — TP3
+
+**Qué se hizo con asistencia de IA (Claude Code).** La creación de labels, épica,
+historia, tareas y bug por `gh`, el armado de la jerarquía con `--add-sub-issue`, el
+esqueleto del workflow de CI con su PR, y la redacción de esta sección.
+
+**Qué es mío y hay que poder defender.** Las dos decisiones que el TP pide justificar
+—duración del sprint y límite de WIP— y el diagnóstico de la historia mal escrita.
+Ninguna de las tres sale de la guía: son criterio propio.
+
+**Cómo se verificó.** La jerarquía se comprobó consultando `subIssuesSummary` por API
+(la épica reporta 1 sub-issue y la historia 2), no mirando la pantalla; la visibilidad
+pública del proyecto, leyendo el campo `public` del propio Project; y el enlace del PR
+con su issue, con `closingIssuesReferences`, que confirma que el PR apunta a `main` y
+cierra el issue #9 y no otro.
