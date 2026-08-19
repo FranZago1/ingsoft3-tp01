@@ -644,14 +644,19 @@ habría que esperar tanto para revisar el rumbo.
 
 ### Límite de trabajo en progreso: 2
 
-El proyecto lo lleva **una sola persona**, así que el límite tiene que responder a
-cuántas cosas puede tener realmente en curso: más de dos significa que ninguna avanza,
-solo se acumulan a medio hacer.
+La regla de arranque es **cantidad de personas más uno**. El proyecto lo lleva una
+sola persona, así que el número es **2**. El "más uno" no es holgura arbitraria: es la
+válvula para cuando algo queda esperando —una revisión, un CI que tarda— y hace falta
+avanzar en otra cosa sin quedarse de brazos cruzados. Más allá de ahí, el límite deja
+de limitar: con tres cosas en curso y una sola persona, ninguna avanza, solo se
+acumulan a medio hacer.
 
 No es 1 porque el flujo tiene bloqueos legítimos que no dependen de mí: un PR esperando
 que termine el CI, una imagen construyéndose. Con límite 1 quedaría formalmente
-impedido de empezar nada mientras espero. Con 2 hay margen para eso y no para el
-multitasking.
+impedido de empezar nada mientras espero.
+
+La señal para ajustarlo es simple: **si nunca lo alcanzo, está demasiado alto**. Si
+durante el TP4 la columna nunca llega a 2, hay que bajarlo a 1.
 
 Lo importante del límite es entender qué hace y qué no: GitHub **no impide** pasarse,
 solo pone el contador de la columna en rojo. Es una señal, no una barrera. El valor
@@ -728,6 +733,45 @@ solo cierra si el PR apunta a la rama por defecto (`main`), y tiene que estar en
 **descripción del PR** —no en un comentario posterior—, porque es lo que además deja el
 issue enlazado al PR que lo cerró.
 
+### Problemas encontrados
+
+**1. `gh` no estaba instalado, y después le faltaba un permiso.** Se instaló con
+`brew install gh`. El primer `gh project list` falló por permisos: el token de
+`gh auth login` no trae el scope `project`, que es el que habilita todo lo de Projects.
+Se resolvió autenticando con `gh auth login -s project`. El síntoma engaña porque el
+login dice "Logged in" igual: el problema no es la autenticación sino el alcance del
+token.
+
+**2. Los dos `+` de la vista de tabla.** Para crear el campo Sprint hay que usar el `+`
+que está al final de la fila de **encabezados de columna**, a la derecha del todo. El
+`+` de abajo de las filas agrega **items** y ofrece "New issue / New draft", que es
+otra cosa. Se pierde bastante tiempo antes de darse cuenta de que son dos botones
+distintos. El camino sin ambigüedad es `⋯` → **Settings**, donde está la lista de
+campos con su botón de crear.
+
+**3. `gh` no sabe crear campos de tipo Iteration.** `gh project field-create` solo
+acepta `TEXT`, `SINGLE_SELECT`, `NUMBER` y `DATE`, así que el campo Sprint parecía ser
+obligatoriamente manual. No lo es: la **API GraphQL sí lo permite**, con
+`createProjectV2Field` y `dataType: ITERATION`. El detalle que hace fallar el primer
+intento es que `iterationConfiguration` exige el arreglo `iterations` con las
+iteraciones explícitas —no alcanza con `startDate` y `duration`—, y el error lo dice
+recién al ejecutarlo. Lo mismo con la vista de tablero: `createProjectV2View` con
+`layout: BOARD_LAYOUT`.
+
+**4. El límite de trabajo en progreso no tiene API.** Se buscó una mutación que lo
+configurara y no existe: `updateProjectV2View` solo maneja nombre, layout, filtro y
+configuración de campos. Es lo único del TP que hay que hacer sí o sí por la web
+(`⋯` de la columna *In Progress* → *Set limit*). Vale saberlo porque marca el límite
+de lo automatizable: si en el TP4 hiciera falta reconstruir el tablero por script, ese
+paso quedaría manual.
+
+**5. El tablero no se llena solo si el proyecto se crea por comando.** Acá no pasó
+porque el proyecto se creó desde la web con la casilla *Import items from repository*
+tildada, que es la que deja configurado el workflow *Auto-add to project*. Se verificó
+que funcionó: los 5 issues aparecieron en el tablero sin agregarlos a mano. Con
+`gh project create` ese workflow no queda armado —no hay repositorio elegido— y el
+tablero nace vacío.
+
 ### Uso de IA — TP3
 
 **Qué se hizo con asistencia de IA (Claude Code).** La creación de labels, épica,
@@ -740,6 +784,7 @@ Ninguna de las tres sale de la guía: son criterio propio.
 
 **Cómo se verificó.** La jerarquía se comprobó consultando `subIssuesSummary` por API
 (la épica reporta 1 sub-issue y la historia 2), no mirando la pantalla; la visibilidad
-pública del proyecto, leyendo el campo `public` del propio Project; y el enlace del PR
+pública del proyecto, leyendo el campo `public` del propio Project; el enlace del PR
 con su issue, con `closingIssuesReferences`, que confirma que el PR apunta a `main` y
-cierra el issue #9 y no otro.
+cierra el issue #9 y no otro; y la automatización del tablero, comprobando que la
+tarjeta de #9 pasó a `Done` **sola** al mergearse el PR, sin que nadie la moviera.
