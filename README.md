@@ -7,8 +7,8 @@ Sistema de reservas de canchas de pádel para un club. Proyecto de la materia
 Stack: **Express + Prisma + PostgreSQL 15** (backend) · **Next.js 15 App Router +
 TypeScript + Tailwind** (frontend) · todo en TypeScript.
 
-> **Estado:** la aplicación está terminada y verificada. Contenerizarla (TP2), el CI
-> (TP4) y los tests (TP4/TP5) están pendientes.
+> **Estado:** la aplicación está terminada y contenerizada (TP2). El CI (TP4) y los
+> tests (TP4/TP5) están pendientes.
 
 Este repositorio arrastra **todos los TP de la materia**: arrancó con el TP1 (ramas
 protegidas, pull requests, conflictos y release `v1.0.0`) y desde el TP2 aloja además
@@ -17,38 +17,91 @@ que acumulan una sección por TP.
 
 ---
 
-## Cómo levantarla
+## Cómo levantarla en una máquina limpia
 
-Postgres en Docker; backend y frontend nativos, en dos terminales.
+Lo único que hace falta instalado es **Docker** (con Docker Compose v2). Ni Node,
+ni Postgres, ni nada más.
 
 ```bash
-# 0. Variables de entorno
-cp .env.example .env               # editar DB_PASSWORD
-cp backend/.env.example backend/.env   # que la password coincida con la de arriba
+git clone https://github.com/FranZago1/ingsoft3-tp01.git
+cd ingsoft3-tp01
 
-# 1. La base
-docker compose up -d db
-
-# 2. Backend (terminal 1)
-cd backend
-npm ci
-npx prisma migrate dev             # crea las tablas
-npm run seed                       # canchas + usuarios de prueba
-npm run dev                        # http://localhost:8080
-
-# 3. Frontend (terminal 2)
-cd frontend
-npm ci
-npm run dev                        # http://localhost:3000
+cp .env.example .env      # ⚠️ PRIMERO esto, y después EDITALO
+docker compose up -d
 ```
 
 👉 **http://localhost:3000**
 
-El rewrite del frontend apunta por default a `http://localhost:8080`, así que en
-desarrollo no hace falta setear `BACKEND_URL`.
+Son **dos comandos**, y el del `.env` es parte del diseño, no un defecto: los
+secretos no se commitean, así que alguien los tiene que poner. El `.env.example`
+documenta cuáles hacen falta.
 
-Para empezar de cero borrando la base: `docker compose down -v && docker compose up -d db`
-(y volver a correr `migrate dev` + `seed`).
+**Editá el `.env` antes de levantar.** Trae valores de ejemplo:
+
+| Variable | Qué es |
+| -------- | ------ |
+| `DB_PASSWORD` | Password del usuario `padel` de PostgreSQL. |
+| `JWT_SECRET`  | Clave con la que el backend firma los JWT. Generá una: `openssl rand -hex 32`. |
+
+Si falta alguna, `docker compose up` **corta con un error que la nombra** en vez de
+levantar la app en un estado inseguro.
+
+🔴 **La password de Postgres se fija la primera vez que se inicializa el volumen.**
+Si después la cambiás en el `.env`, la base la ignora. Para que tome la nueva hay
+que borrar el volumen: `docker compose down -v` (con la pérdida de datos que eso
+implica).
+
+No hace falta correr migraciones ni seed a mano: el entrypoint del backend aplica
+`prisma migrate deploy` y un seed idempotente en cada arranque.
+
+### Qué levanta
+
+| Servicio | Imagen | Puerto publicado |
+| -------- | ------ | ---------------- |
+| `frontend` | build de `./frontend` | **3000** → la app |
+| `backend`  | build de `./backend`  | 8080 → la API, para `curl`/Postman |
+| `db`       | `postgres:15-alpine`  | ninguno: solo se accede desde la red interna |
+
+### Comandos útiles
+
+```bash
+docker compose ps                    # estado y healthchecks
+docker compose logs -f backend       # seguir los logs
+docker compose exec db psql -U padel -d padel   # entrar a la base
+docker compose down                  # apaga; los datos SOBREVIVEN
+docker compose down -v               # apaga y BORRA los datos
+```
+
+### Levantarlo sin el código, desde las imágenes publicadas
+
+```bash
+cp .env.example .env      # y editarlo igual que arriba
+docker compose -f docker-compose.registry.yml up -d
+```
+
+Baja `ghcr.io/franzago1/reservapadel-backend:v0.1.0` y `...-frontend:v0.1.0` en vez
+de construir. Las imágenes son **linux/arm64** (construidas en Apple Silicon): en una
+máquina Intel/AMD van a dar `no matching manifest for linux/amd64`.
+
+---
+
+## Desarrollo sin contenedores
+
+Para iterar sobre el código conviene el modo nativo: Postgres en Docker, back y
+front con recarga automática, en dos terminales.
+
+```bash
+cp .env.example .env
+cp backend/.env.example backend/.env   # que la password coincida con la de arriba
+
+docker compose up -d db                # solo la base
+
+cd backend && npm ci && npx prisma migrate dev && npm run seed && npm run dev
+cd frontend && npm ci && npm run dev
+```
+
+El proxy `/api/*` del frontend apunta por default a `http://localhost:8080`, así que
+en este modo no hace falta setear `BACKEND_URL`.
 
 ---
 
@@ -154,11 +207,15 @@ Viven en `backend/src/services/` como funciones puras.
 
 ## Variables de entorno
 
-### Raíz (`.env`, lo consume `docker-compose.yml`)
+### Raíz (`.env`, lo consumen `docker-compose.yml` y `docker-compose.registry.yml`)
 
 | Variable | Descripción |
 | --- | --- |
 | `DB_PASSWORD` | Password del usuario `padel` de Postgres. **Obligatoria.** |
+| `JWT_SECRET` | Clave de firma de los JWT, que el compose le inyecta al backend. **Obligatoria.** |
+
+Las dos llevan `${VAR:?mensaje}` en el compose: si falta alguna, `docker compose up`
+corta nombrándola en vez de arrancar con un valor vacío.
 
 ### Backend (`backend/.env`)
 
@@ -172,7 +229,7 @@ Viven en `backend/src/services/` como funciones puras.
 
 | Variable | Descripción |
 | --- | --- |
-| `BACKEND_URL` | Destino del rewrite de `/api/*`. Default `http://localhost:8080`. |
+| `BACKEND_URL` | Destino al que `src/middleware.ts` reenvía `/api/*`. Se lee **en cada pedido**, así que la misma imagen sirve para cualquier entorno. Default `http://localhost:8080`. |
 
 Ver `.env.example` y `backend/.env.example`.
 

@@ -372,3 +372,255 @@ de la cátedra.
 
 La IA se usó como un par que escribe rápido y propone; **la verificación fue siempre por
 evidencia ejecutable** (builds, `curl` contra la app real), nunca "quedó lindo, va".
+
+---
+
+## TP2 — Contenedores
+
+Todo lo de abajo se decidió durante la contenerización. La justificación de **por qué
+esta app** y de por qué es del tamaño que es está más arriba, en "La aplicación —
+ReservaPadel": se eligió antes del TP2 y no cambió.
+
+### ¿Por qué dos Dockerfiles y no uno solo?
+
+Porque son dos unidades de despliegue distintas, que escalan y fallan por separado.
+Meter los dos en una imagen obligaría a redeployar el backend cada vez que cambia un
+color del frontend, y a que la imagen cargue con las dependencias de los dos. El
+compose los une en tiempo de ejecución; el build los mantiene separados.
+
+Cada uno tiene su propio `.dockerignore` **en su carpeta**, no uno en la raíz: Docker
+lo busca en el directorio que se le pasa como contexto (`./backend`, `./frontend`).
+Un `.dockerignore` en la raíz del repo no lo lee nadie.
+
+### ¿Por qué `node:20-alpine` como base?
+
+- **Alpine** porque la imagen base pesa ~194 MB contra ~1.1 GB de `node:20` a secas.
+  Menos superficie instalada es también menos superficie de ataque.
+- **Node 20** porque es LTS y es la versión con la que se desarrolló. Está **fijada**:
+  nada de `node:latest`, que convierte cada build en una lotería.
+- El costo de alpine es real y lo pagamos: usa musl en vez de glibc, y eso rompió
+  Prisma (ver "Problemas encontrados", más abajo).
+
+Para Postgres, `postgres:15-alpine`, fijada por la misma razón.
+
+### Multi-stage: qué queda afuera de la imagen final
+
+La idea es que **lo que hace falta para compilar no hace falta para ejecutar**.
+
+| | Backend | Frontend |
+| --- | --- | --- |
+| Etapa 1 | `deps`: `npm ci --omit=dev` + `prisma generate` | `deps`: `npm ci` (todas) |
+| Etapa 2 | `build`: devDependencies + `tsc` → `dist/` | `build`: `next build` con `output: "standalone"` |
+| Etapa 3 | `runner`: Node + deps de prod + `dist/` | `runner`: Node + `server.js` + estáticos |
+
+La prueba de que sirvió es que en la imagen final **no existe `/app/src`**: no viaja
+el código fuente ni el compilador. Los números están en `evidencias.md`; el frontend
+se achica más (‑73%) que el backend (‑36%) porque `output: "standalone"` traza qué
+módulos usa realmente y descarta el resto de `node_modules`.
+
+El orden de las capas no es casual: primero se copian `package.json` y el lockfile y
+recién después el código. Así la capa de dependencias solo se rehace cuando cambian
+las dependencias, y no en cada edición de un `.ts`.
+
+### ¿Por qué `npm ci` y no `npm install`?
+
+`ci` instala exactamente lo que dice el lockfile y falla si `package.json` y el lock
+no coinciden. `install` puede resolver versiones nuevas y hacer que dos builds del
+mismo commit produzcan imágenes distintas. En una imagen que se publica, eso es
+inaceptable.
+
+### Usuario no-root y healthcheck
+
+Los dos contenedores corren como el usuario `node` (uid 1000) que ya trae la imagen.
+Un proceso que no necesita root no debe correr como root: si alguien logra escapar de
+la app, no cae en un root del contenedor.
+
+Los dos declaran `HEALTHCHECK` con `node -e "fetch(...)"` en vez de `curl`, porque
+alpine no trae curl y no vale la pena instalarlo. El healthcheck no es decorativo: es
+lo que habilita el `condition: service_healthy` del compose.
+
+### Migraciones en el entrypoint: el trade-off
+
+El entrypoint del backend corre `prisma migrate deploy`, después un seed idempotente,
+y recién ahí `exec node dist/index.js`.
+
+- **A favor:** en una máquina limpia, `docker compose up -d` deja la base lista sin
+  comandos extra. Es literalmente el criterio de aceptación del TP.
+- **En contra:** con varias réplicas del backend, todas intentarían migrar a la vez.
+  Y una migración que falla deja el contenedor en crash-loop en vez de dejar la app
+  vieja andando.
+- **Postura:** para una entrega de una sola réplica es el trade-off correcto. En
+  producción real esto es un job separado que corre antes del deploy, y así se hace
+  en el TP6.
+
+El `exec` del final no es cosmético: reemplaza al shell por Node, así la app queda
+como PID 1 y recibe el `SIGTERM` de `docker stop`. Sin `exec`, el shell se come la
+señal y el contenedor tarda 10 segundos en morir a la fuerza.
+
+### Qué persiste y qué no
+
+**Persiste solo la base**, en el volumen nombrado `db_data`. Todo lo demás —los
+contenedores, el `dist/`, el `.next/`— es descartable y se reconstruye.
+
+Es un **volumen nombrado** y no un bind mount a propósito: en Mac y Windows hay una
+VM en el medio, y montar el directorio de datos de PostgreSQL desde el disco del host
+es notablemente más lento y da problemas de permisos.
+
+La consecuencia práctica: `docker compose down` conserva los datos y `down -v` los
+borra. La prueba está en `evidencias.md`.
+
+### ¿Por qué la base NO publica el puerto 5432?
+
+Porque nadie fuera de la red del compose necesita hablarle: el único cliente es el
+backend, que la alcanza por el nombre de servicio `db`. Publicarla la expone a toda
+la máquina sin ninguna necesidad.
+
+Y hay una razón práctica que descubrimos a los golpes: esta máquina tiene un
+**PostgreSQL nativo** escuchando en `127.0.0.1:5432`. Mientras el compose publicaba
+ese mismo puerto, todo lo que la app escribía por `localhost:5432` iba a la base
+nativa y no a la del contenedor — con lo cual una prueba de persistencia daba
+"positiva" sin probar nada. Al dejar de publicar el puerto, la ambigüedad desapareció:
+la app solo puede hablar con la base del compose. Para inspeccionarla:
+`docker compose exec db psql -U padel -d padel`.
+
+### `depends_on` con `condition: service_healthy`
+
+`depends_on` a secas solo ordena el arranque: dice "arrancá la base primero", no
+"esperá a que la base esté lista". Postgres tarda varios segundos entre que el
+contenedor arranca y que acepta conexiones, y en esa ventana `migrate deploy` falla.
+
+Por eso la base declara un healthcheck con `pg_isready -U padel -d padel` y el
+backend espera `service_healthy`. El frontend hace lo mismo con el backend, que a su
+vez tiene su healthcheck contra `/api/health`. El arranque lo muestra en orden:
+`db Healthy → backend Starting → backend Healthy → frontend Starting`.
+
+### Configuración: `${VAR:?mensaje}` en vez de `${VAR}`
+
+Compose, ante una variable que no existe, **no falla**: la reemplaza por vacío y
+sigue. El resultado es una base que se niega a arrancar con un error que no menciona
+la variable, o peor, una app levantada sin secreto. La sintaxis `${VAR:?mensaje}`
+corta el `up` nombrando la variable que falta. Está probado: el primer
+`docker compose config` cortó con *"required variable JWT_SECRET is missing a value"*.
+
+`.env` está en `.gitignore` y se commitea `.env.example` con los nombres y valores de
+ejemplo. `docker-compose.registry.yml` también necesita ese `.env`: si se le pasa a
+alguien "para levantar sin el código", van dos archivos, no uno.
+
+### ¿Por qué el frontend no lleva nginx?
+
+Porque no es una SPA. Una SPA compila a HTML/JS/CSS estáticos y necesita un servidor
+web que los sirva y que proxee `/api` al backend — ese es el rol del `nginx.conf`.
+Nuestro frontend es **SSR**: renderiza en el servidor en cada pedido, así que la
+imagen final necesita un runtime de Node y ya tiene un server propio. Poner nginx
+adelante sería un salto de red extra sin ninguna función.
+
+El rol que en una SPA cumple el `proxy_pass` de nginx, acá lo cumple el reenvío de
+`/api/*` del propio server de Next.
+
+### ¿Por qué el proxy de `/api/*` está en un middleware y no en `next.config.ts`?
+
+Esta decisión **cambió durante el TP2** y vale la pena poder contarla.
+
+Originalmente el reenvío era un `rewrites()` en `next.config.ts`, que es lo que
+recomienda la documentación. Al inspeccionar la imagen construida apareció el
+problema: Next **resuelve los rewrites en tiempo de build**. El destino queda escrito
+en `.next/routes-manifest.json` y el `next.config.js` ni siquiera viaja en la imagen
+con `output: "standalone"`. Verificado a mano:
+
+```json
+"destination": "http://localhost:8080/api/:path*"
+```
+
+Es decir: la imagen quedaba atada al backend que estuviera configurado el día que se
+compiló, y `BACKEND_URL` en runtime no hacía nada. Eso rompe el principio que sostiene
+todo el TP —una misma imagen, distinta configuración según dónde corra— y habría
+hecho fallar el login dentro del compose, porque `localhost` adentro del contenedor
+del frontend es el frontend mismo.
+
+La solución fue mover el reenvío a `src/middleware.ts`, que corre en **cada pedido** y
+lee `process.env.BACKEND_URL` cuando el contenedor ya está andando. Se validó con un
+experimento antes de adoptarla: se levantó un contenedor cualquiera llamado `backend`
+y se pidió `/api/health` a través del front, que respondió con el header
+`x-middleware-rewrite: http://backend/api/health`. Sigue sin haber lógica de negocio
+en el frontend: el middleware solo reenvía.
+
+Las llamadas server→server (`lib/api.ts`, para las páginas SSR) nunca tuvieron este
+problema: leen la variable al arrancar el proceso.
+
+### Registry: ghcr.io, tag `v0.1.0`, público
+
+Se eligió **ghcr.io** porque la cuenta ya existe —es la de GitHub del TP1—, las
+imágenes quedan junto al código, y en el TP7 el pipeline se va a poder autenticar con
+el `GITHUB_TOKEN` del propio workflow, sin secretos.
+
+Las dos imágenes llevan `LABEL org.opencontainers.image.source` apuntando al repo,
+que es lo que linkea el package con el código.
+
+El tag es **`v0.1.0`**, semver, no `latest`. `latest` es un nombre que apunta a cosas
+distintas según el día: sirve para probar, no para declarar qué está corriendo.
+
+**Arquitectura:** las imágenes se construyeron en una Mac con Apple Silicon, así que
+son `linux/arm64`. Una máquina Intel/AMD —por ejemplo los runners de GitHub Actions—
+va a recibir `no matching manifest for linux/amd64`. Es una limitación conocida y
+asumida para este TP; se resuelve en el TP7 con `docker buildx` construyendo para las
+dos arquitecturas a la vez.
+
+### Problemas encontrados
+
+**1. Prisma no arrancaba en alpine: `failed to detect the libssl/openssl version`.**
+El contenedor del backend construía bien y moría en el arranque. Prisma trae motores
+nativos y elige cuál usar mirando la versión de OpenSSL del sistema; `node:20-alpine`
+no trae `openssl` instalado, así que Prisma caía al motor de openssl-1.1.x y en
+runtime intentaba descargar el correcto. Se resolvió con `apk add --no-cache openssl`,
+y **antes del `npm ci`**, que es cuando se descargan los motores. El `schema.prisma`
+ya declaraba los `binaryTargets` de musl, pero eso no alcanza si el sistema no puede
+reportar su versión de OpenSSL.
+
+**2. `Can't write to /app/node_modules/@prisma/engines`.** Consecuencia del anterior
+combinada con `USER node`: los archivos copiados quedaban de root y el CLI de Prisma
+no podía escribir. Se resolvió con `COPY --chown=node:node` en vez de un `chown -R`
+posterior, que habría duplicado todo `node_modules` en una capa nueva.
+
+**3. El CLI de Prisma no estaba en la imagen final.** El entrypoint corre
+`prisma migrate deploy`, pero `prisma` era una `devDependency` y `npm ci --omit=dev`
+la dejaba afuera. Se movió a `dependencies`. Detalle que apareció al verificar: el
+`package-lock.json` no cambió, porque `@prisma/client` ya declara `prisma` como peer
+opcional y npm lo tenía resuelto como no-dev. O sea que funcionaba por accidente;
+ahora está declarado a propósito.
+
+**4. El rewrite horneado en el build.** Descrito arriba, en la sección del middleware.
+Es el problema más serio que apareció, porque la app **funcionaba** en desarrollo y
+habría fallado recién dentro del compose.
+
+**5. `error from registry: unknown` al publicar en ghcr.** El push subía todas las
+capas (`Pushed`) y fallaba al final, al subir el índice. No era el token ni los
+permisos: buildx adjunta un *attestation manifest* (provenance) que ghcr rechaza. Se
+resolvió construyendo y publicando con
+`docker buildx build --provenance=false --sbom=false --push`.
+
+**6. La base nativa que se comía las conexiones.** Descrito arriba, en la sección del
+puerto 5432. Lo importante del caso: una prueba puede dar el resultado esperado por el
+motivo equivocado, y eso es peor que fallar.
+
+### Uso de IA — TP2
+
+**Qué se hizo con asistencia de IA (Claude Code).** La redacción de los Dockerfiles,
+el `docker-entrypoint.sh`, los dos `.dockerignore`, los dos compose y esta sección de
+`decisiones.md`, además de la ejecución de los builds y las pruebas desde la terminal.
+
+**Cómo se verificó.** Ninguna de las afirmaciones de este documento se aceptó por
+buena: cada una se comprobó contra la máquina. Los tamaños salen de `docker images`;
+que el fuente no viaje en la imagen final se verificó con `docker exec ... ls /app`;
+que el usuario no sea root, con `whoami` adentro del contenedor; la persistencia, con
+el ciclo `down` / `up` / `down -v` completo; que las imágenes sean públicas, pidiendo
+el manifest a ghcr **sin credenciales** en vez de confiar en lo que dice la pantalla
+de GitHub; y que el compose del registry no construya nada, borrando antes las
+imágenes locales, el cache de build y las credenciales.
+
+**Hallazgos de la IA que hubo que corregir.** Dos de los problemas de la lista de
+arriba —el rewrite horneado en el build y la base nativa que se comía las conexiones—
+aparecieron justamente porque una verificación contradijo lo que se había afirmado
+antes. En el segundo caso, una prueba de persistencia que se había reportado como
+exitosa no probaba nada, y hubo que rehacerla. Sirve como recordatorio de que el
+trabajo asistido por IA se defiende con evidencia reproducible, no con la confianza en
+lo que la herramienta dice que hizo.
