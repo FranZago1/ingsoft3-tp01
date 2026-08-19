@@ -1,0 +1,61 @@
+# El mismo sistema que docker-compose.yml, pero SIN el código fuente: en vez de
+# construir las imágenes, las descarga del registry. Sirve para levantar la app
+# en una máquina que no tiene el repositorio clonado.
+#
+#     cp .env.example .env     (y editar DB_PASSWORD y JWT_SECRET)
+#     docker compose -f docker-compose.registry.yml up -d
+#
+# Ojo: este archivo TAMBIÉN necesita el .env. Si se lo pasás a alguien "para
+# levantar sin el código", van dos archivos, no uno —o la password por otro
+# canal—. No es un defecto: es la disciplina de que el secreto no viaje por el
+# repositorio.
+#
+# Diferencia con docker-compose.yml: cambian DOS líneas, las de `build:` por
+# `image:`. Todo lo demás —servicios, volumen, healthchecks, depends_on— es
+# idéntico a propósito: si algo más cambiara, esto ya no probaría que la imagen
+# publicada es la misma que se construye localmente.
+#
+# Las imágenes fueron construidas en una Mac con Apple Silicon, así que son
+# linux/arm64. Una máquina Intel/AMD (por ejemplo los runners de GitHub
+# Actions) va a recibir "no matching manifest for linux/amd64". Se resuelve en
+# el TP7 con docker buildx y build multi-arquitectura (ver decisiones.md).
+
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: padel
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?falta DB_PASSWORD, copiá .env.example a .env}
+      POSTGRES_DB: padel
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U padel -d padel"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    image: ghcr.io/franzago1/reservapadel-backend:v0.1.0   # ← antes: build: ./backend
+    environment:
+      DATABASE_URL: postgresql://padel:${DB_PASSWORD:?falta DB_PASSWORD}@db:5432/padel?schema=public
+      JWT_SECRET: ${JWT_SECRET:?falta JWT_SECRET, copiá .env.example a .env}
+      PORT: 8080
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  frontend:
+    image: ghcr.io/franzago1/reservapadel-frontend:v0.1.0  # ← antes: build: ./frontend
+    environment:
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+volumes:
+  db_data:
