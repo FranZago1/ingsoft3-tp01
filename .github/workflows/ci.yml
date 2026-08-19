@@ -1,0 +1,13 @@
+# Esqueleto del workflow de CI.
+#
+# Hoy solo necesita existir y dispararse: el contenido real del pipeline
+# —instalar dependencias, lint, tsc, build y tests de back y front— es el TP4.
+name: CI
+
+on: [pull_request]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
