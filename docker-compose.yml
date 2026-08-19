@@ -1,27 +1,68 @@
-# Solo la base de datos, para desarrollar con el backend y el frontend nativos.
+# Los tres servicios de la app. En una máquina limpia:
 #
-#     cp .env.example .env     (y editar DB_PASSWORD)
+#     cp .env.example .env     (y editar DB_PASSWORD y JWT_SECRET)
 #     docker compose up -d
 #
-# Contenerizar la app es trabajo del TP2.
+# y la app queda usable en http://localhost:3000. Son dos comandos: el paso
+# del .env es parte del diseño, no un defecto. Los secretos NO se commitean,
+# así que alguien los tiene que poner; el .env.example documenta cuáles.
 
 services:
   db:
     image: postgres:15-alpine
     environment:
       POSTGRES_USER: padel
-      # La password entra por el .env de la raíz, que no se commitea.
+      # La password entra por el .env de la raíz, que no se commitea. La
+      # sintaxis :?mensaje hace que compose FALLE con un error claro si la
+      # variable no está, en vez de levantar una base con password vacía.
       POSTGRES_PASSWORD: ${DB_PASSWORD:?falta DB_PASSWORD, copiá .env.example a .env}
       POSTGRES_DB: padel
-    ports:
-      - "5432:5432"
+    # Volumen nombrado: es lo único que sobrevive a `docker compose down`.
+    # Los contenedores son descartables; los datos, no.
     volumes:
       - db_data:/var/lib/postgresql/data
+    # NO se publica el 5432 al host: nadie fuera de esta red necesita hablar
+    # con la base. Para inspeccionarla: docker compose exec db psql -U padel -d padel
     healthcheck:
+      # pg_isready responde recién cuando Postgres acepta conexiones. Sin esto,
+      # "contenedor arrancado" no significa "base lista", y el backend correría
+      # las migraciones contra una base que todavía no escucha.
       test: ["CMD-SHELL", "pg_isready -U padel -d padel"]
       interval: 5s
       timeout: 5s
       retries: 10
+
+  backend:
+    build: ./backend
+    environment:
+      # Host=db: el nombre del SERVICIO. Dentro de la red de compose, Docker lo
+      # resuelve al contenedor. Acá "localhost" sería el propio backend.
+      DATABASE_URL: postgresql://padel:${DB_PASSWORD:?falta DB_PASSWORD}@db:5432/padel?schema=public
+      JWT_SECRET: ${JWT_SECRET:?falta JWT_SECRET, copiá .env.example a .env}
+      PORT: 8080
+    depends_on:
+      db:
+        # No alcanza con que el contenedor de la base exista: hay que esperar a
+        # que esté SANA. Es la diferencia entre `depends_on` a secas —que solo
+        # mira el orden de arranque— y esperar el healthcheck.
+        condition: service_healthy
+    ports:
+      - "8080:8080"
+
+  frontend:
+    build: ./frontend
+    environment:
+      # La misma imagen sirve para cualquier entorno: lo único que cambia es
+      # esta variable, que el middleware lee en cada pedido.
+      BACKEND_URL: http://backend:8080
+    depends_on:
+      backend:
+        # El backend define un HEALTHCHECK en su Dockerfile (contra
+        # /api/health), así que acá también se puede esperar a que esté sano
+        # y no solo arrancado.
+        condition: service_healthy
+    ports:
+      - "3000:3000"
 
 volumes:
   db_data:

@@ -1,0 +1,24 @@
+# Va al lado del Dockerfile, NO en la raíz del repo: Docker lo busca en la
+# carpeta que se le pasa como contexto (./backend). Por eso hay uno por
+# contexto, con contenido distinto.
+#
+# Todo lo que no esté excluido acá se manda al daemon de Docker en cada build:
+# excluir no es prolijidad, es lo que evita builds lentos y —peor— que se
+# cuelen artefactos de tu máquina adentro de la imagen.
+
+# Dependencias instaladas en tu máquina: las reinstala `npm ci` adentro del
+# contenedor. Si se copiaran, viajarían los binarios compilados para tu SO
+# (y el cliente de Prisma generado para tu plataforma, no para alpine).
+**/node_modules/
+
+# Salida de tsc: la imagen la vuelve a generar en la etapa de build.
+**/dist/
+
+# Historial de git: no tiene ninguna función adentro de la imagen y pesa.
+.git/
+
+# Secretos: NUNCA adentro de una imagen. La configuración entra por variables
+# de entorno al arrancar el contenedor, no horneada en el build.
+.env
+
+*.log

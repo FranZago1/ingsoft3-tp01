@@ -1,0 +1,24 @@
+# Va al lado del Dockerfile del frontend, NO en la raíz: Docker lo busca en la
+# carpeta que se le pasa como contexto (./frontend). De ahí que haya uno por
+# contexto, con contenido distinto al del backend.
+
+# Dependencias instaladas en tu máquina. Si se copiaran, pisarían las que
+# `npm ci` acaba de instalar para Linux dentro del contenedor: Next y sus
+# herramientas traen binarios compilados por plataforma (SWC), y el build
+# muere con errores que no mencionan en ningún momento que el culpable sea un
+# archivo que vos no escribiste.
+node_modules/
+
+# Salida de builds anteriores hechos en tu máquina: la imagen la regenera.
+# Además .next/cache pesa cientos de MB y no sirve de nada adentro.
+.next/
+
+# Historial de git: ninguna función adentro de la imagen, y pesa.
+.git/
+
+# Secretos: NUNCA horneados en una imagen. La configuración entra por
+# variables de entorno al arrancar el contenedor.
+.env
+
+*.log
+tsconfig.tsbuildinfo
