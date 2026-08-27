@@ -1,5 +1,7 @@
 # ReservaPadel
 
+[![CI](https://github.com/FranZago1/ingsoft3-tp01/actions/workflows/ci.yml/badge.svg)](https://github.com/FranZago1/ingsoft3-tp01/actions/workflows/ci.yml)
+
 Sistema de reservas de canchas de pádel para un club. Proyecto de la materia
 **Ingeniería de Software 3 (UCC)**: el foco está en el **sistema de entrega**
 (Docker, CI/CD, configuración por entorno, testeabilidad), no en la app en sí.
@@ -7,8 +9,8 @@ Sistema de reservas de canchas de pádel para un club. Proyecto de la materia
 Stack: **Express + Prisma + PostgreSQL 15** (backend) · **Next.js 15 App Router +
 TypeScript + Tailwind** (frontend) · todo en TypeScript.
 
-> **Estado:** la aplicación está terminada y contenerizada (TP2). El CI (TP4) y los
-> tests (TP4/TP5) están pendientes.
+> **Estado:** la aplicación está terminada y contenerizada (TP2) y cada Pull Request
+> construye las dos imágenes antes de poder mergearse (TP4). Los tests son el TP5.
 
 Este repositorio arrastra **todos los TP de la materia**: arrancó con el TP1 (ramas
 protegidas, pull requests, conflictos y release `v1.0.0`) y desde el TP2 aloja además
