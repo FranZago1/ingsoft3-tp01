@@ -13,4 +13,3 @@ createApp().listen(port, () => {
 });
 
 // TODO: endpoint de salud con uptime
-import { noExiste } from "./no-existe";
