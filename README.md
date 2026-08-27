@@ -275,3 +275,4 @@ reglas puras en `backend/src/services/`, validaciones puras en
 - **`evidencias.md`** — las pruebas de cada TP (capturas en `img/`): push rechazado
   por la protección de `main`, el conflicto en el PR, los marcadores y la release
   `v1.0.0`. También conserva el `README.md` original del ejercicio de conflicto.
+
