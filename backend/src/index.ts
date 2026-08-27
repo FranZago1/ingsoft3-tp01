@@ -11,3 +11,5 @@ const port = getPort();
 createApp().listen(port, () => {
   console.log(`Backend escuchando en http://0.0.0.0:${port}`);
 });
+
+// TODO: endpoint de salud con uptime
