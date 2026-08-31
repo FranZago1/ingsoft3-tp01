@@ -25,7 +25,9 @@ El commit rechazado quedó solo en la máquina local; se limpió con git reset -
 
 ![2](img/02-conflictoEnPr.png)
 
-PR #2 (feature/titulo-a). En la interfaz aparecen el indicador rojo Merge conflicts en la esquina superior derecha, el aviso This branch has conflicts that must be resolved señalando a README.md como el único archivo en disputa, y el botón Squash and merge bloqueado.
+PR #3 (`feature/titulo-b`), el segundo en integrarse. En la interfaz aparecen el aviso This branch has conflicts that must be resolved señalando a README.md como el único archivo en disputa, el botón Resolve conflicts que abre el editor web, y el Squash and merge bloqueado.
+
+El conflicto está acá y no en el PR #2 (`feature/titulo-a`) por el orden de integración: el #2 se mergeó primero, a las 16:59, y entró limpio porque en ese momento nadie había tocado esa línea todavía. El #3 se mergeó cuatro minutos después, ya contra un main que había cambiado. El conflicto no es una propiedad de la rama: es una propiedad del *orden* en que se integran.
 
 Lo interesante está en la secuencia temporal: apenas un minuto antes, GitHub marcaba este mismo PR como mergeable. Ambas ramas partieron del mismo commit de main y tocaron la misma línea, pero mientras ninguna de las dos había sido incorporada, no existía colisión alguna. El conflicto no aparece en el momento de escribir el cambio: aparece recién cuando se lo quiere integrar contra un main que ya avanzó.
 
@@ -36,6 +38,12 @@ Lo interesante está en la secuencia temporal: apenas un minuto antes, GitHub ma
 Arriba de ======= está la versión de la rama actual (feature/titulo-b); abajo, la que ya vive en main tras el merge del PR #2. Sobre el bloque, GitHub ofrece los tres atajos de siempre —Accept current change | Accept incoming change | Accept both changes— y en la esquina superior derecha se lee 1 conflict en rojo: mientras quede un solo marcador en el archivo, no hay forma de darlo por resuelto.
 
 Y lo que no está en conflicto es igual de informativo: las líneas 6 a 8 —la sección ## instalación con el git clone, que venía del PR #1— aparecen limpias, fuera del bloque marcado. Ninguna de las dos ramas las tocó, así que Git las fusionó solo, sin preguntar. El conflicto es quirúrgico: cae sobre la línea disputada, no sobre el archivo entero.
+
+**El commit que resolvió el conflicto es `b7301ed`** (*Merge branch 'main' into feature/titulo-b*), y se ve en la pestaña **Commits del PR #3**, no en el historial de `main`. Es lo que crea el editor web al guardar la resolución: trae `main` a la rama y deja resuelto ahí el choque, antes de que el PR se pueda mergear.
+
+Que no esté en `main` no es un descuido: los tres PR se integraron con **squash**, que aplasta todos los commits de la rama en uno solo. En `main` quedó `98f72da` (*VERSION B in README.md (#3)*) y nada más. Es el trade-off del squash: se gana un historial de `main` legible —un commit por PR— y se pierde el detalle del camino, que queda archivado en el PR.
+
+El contenido que sobrevivió fue el de la **versión A**: con las dos versiones a la vista se eligió a mano cuál quedaba, que es exactamente la decisión que Git no puede tomar solo.
 
 ### 4. La release v1.0.0 publicada
 
