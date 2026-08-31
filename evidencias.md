@@ -361,3 +361,135 @@ No era el token ni los permisos: buildx adjunta un *attestation manifest* (prove
 y ghcr rechaza ese índice. Se resolvió con `--provenance=false --sbom=false` y
 publicando con `docker buildx build --push`. El detalle que confunde es que las capas
 dicen `Pushed` y el error aparece recién al subir el índice.
+
+---
+
+## TP4 — Integración continua con GitHub Actions
+
+La secuencia que pide el práctico —**rojo → bloqueado → fix → verde**— se provocó a
+propósito en el PR #16 (`feature/demo-gate`). La rama **no se borró** al mergear, así
+que el Pull Request sigue completo en el historial, con sus dos corridas:
+
+| | commit | corrida | resultado |
+|---|---|---|---|
+| Se rompe el build | `d8853a2` | [33082568483](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/33082568483) | **failure** |
+| Se arregla | `b497c9d` | [33082955438](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/33082955438) | **success** |
+
+El cambio que rompe es de una línea, y es deliberadamente tonto para que el foco quede
+en el pipeline y no en el bug:
+
+```diff
++// TODO: endpoint de salud con uptime
++import { noExiste } from "./no-existe";
+```
+
+### 1. El check en rojo y el merge bloqueado
+
+![5](img/05-gateBloqueaElMerge.png)
+
+Es la captura central del TP4 porque muestra las dos cosas en el mismo cuadro: que el
+pipeline **detectó** la rotura y que el gate **frenó** el merge.
+
+Qué mirar, de arriba hacia abajo:
+
+- La X roja sobre el commit `d8853a2`, en el timeline del PR.
+- `Some checks were not successful — 1 failing, 1 successful checks`.
+- `CI / build-backend (pull_request)` — **Failing after 38s**, con la etiqueta
+  **Required** a la derecha. Esa etiqueta es el gate: sin ella el check sería
+  informativo y el merge estaría habilitado igual.
+- `CI / build-frontend (pull_request)` — **Successful in 22s**, también **Required**.
+- **`Squash and merge` en gris, deshabilitado.**
+
+El verde del frontend al lado del rojo del backend no es decorativo: prueba que los dos
+jobs corren **en paralelo** y que la rotura está acotada al backend. Eso se sabe antes
+de abrir un solo log. Y prueba también que **un solo check en rojo alcanza** para
+bloquear: no hace falta que fallen los dos.
+
+### 2. Por qué falló: el log del runner
+
+El job no falló en un paso propio del workflow, sino **dentro del `docker build`**, en
+la línea 47 del `Dockerfile` del TP2 — que es exactamente el punto del práctico: el
+pipeline no sabe compilar, delega en el Dockerfile.
+
+```
+#15 3.892 src/index.ts(16,26): error TS2307: Cannot find module './no-existe'
+          or its corresponding type declarations.
+#15 ERROR: process "/bin/sh -c npx prisma generate && npx tsc"
+          did not complete successfully: exit code: 2
+ERROR: failed to build: failed to solve: process "/bin/sh -c npx prisma generate && npx tsc"
+          did not complete successfully: exit code: 2
+##[error]buildx failed with: ERROR: failed to build: ...
+```
+
+La cadena completa es la que hay que poder explicar en el oral: `tsc` devuelve **exit
+code 2** → el `RUN` del Dockerfile falla → `buildx` no puede armar la imagen → el job
+queda en rojo → el check *required* bloquea el merge.
+
+### 3. El gate no se saltea por línea de comandos
+
+Con el check en rojo se intentó mergear igual, para comprobar que la protección no es
+sólo un botón gris en la interfaz:
+
+```
+$ gh pr merge 16 --squash
+X Pull request #16 is not mergeable: the base branch policy prohibits the merge.
+```
+
+`--admin` tampoco habría servido: `enforce_admins` está activo desde el TP1, así que la
+regla se aplica también al dueño del repositorio. Estado de la protección al momento de
+la prueba, leído por API y no por la pantalla de Settings:
+
+```
+$ gh api repos/FranZago1/ingsoft3-tp01/branches/main/protection
+required_status_checks.contexts : ["build-backend", "build-frontend"]
+required_status_checks.strict   : true
+enforce_admins.enabled          : true
+required_approving_review_count : 0
+```
+
+### 4. El fix y el verde
+
+El segundo commit (`b497c9d`) borra el import y no toca nada más. El pipeline volvió a
+correr **solo** al pushear a la misma rama —no hubo que apretar nada— y los dos jobs
+terminaron en verde, con el PR en estado `CLEAN` y el botón de merge habilitado.
+
+📷 *Captura pendiente: el PR #16 en `https://github.com/FranZago1/ingsoft3-tp01/pull/16`,
+pestaña Conversation. El timeline muestra los dos commits con su ícono —`d8853a2` con la
+X roja y `b497c9d` con el tilde verde— y el PR ya en Merged. Es la secuencia completa en
+una sola imagen.*
+
+### 5. El otro freno: la rama desactualizada (`strict`)
+
+![6](img/06-ramaDesactualizada.png)
+
+Esta captura es del PR #17 y muestra un caso distinto que conviene tener a mano, porque
+en la defensa se confunde con el anterior: **todos los checks en verde y el merge
+bloqueado igual**.
+
+- `All checks have passed — 2 successful checks`.
+- `This branch is out-of-date with the base branch`, con el botón *Update branch*.
+- `Squash and merge` en gris, otra vez.
+
+Acá no frena el pipeline: frena `strict: true` (*Require branches to be up to date*).
+Es la regla que ataja el caso que ningún check individual detecta —dos PRs que pasan por
+separado y rompen `main` al juntarse—. El costo es real: hay que apretar *Update branch*
+y esperar otra corrida, porque el commit de la mezcla es **nuevo** y sobre él el
+pipeline nunca corrió.
+
+### 6. El badge del README
+
+El badge vive en el `README.md` de la raíz y son **dos direcciones**, no una: la de
+adentro es la imagen, la de afuera es adónde lleva el clic. Escribiendo sólo la imagen
+el badge se ve idéntico pero el clic abre el SVG suelto — una página en blanco. Se
+verificaron las dos por separado:
+
+```
+$ curl -o /dev/null -s -w '%{http_code}\n' .../actions/workflows/ci.yml/badge.svg
+200
+$ curl -o /dev/null -s -w '%{http_code}\n' .../actions/workflows/ci.yml
+200
+```
+
+El badge lee el estado de la **última corrida de `main`**, que existe gracias al
+disparador `push` del workflow. Su dirección depende del **nombre del archivo**
+(`ci.yml`), no del `name: CI` de adentro: renombrar el archivo rompe el badge.
