@@ -31,7 +31,19 @@ COPY . .
 ENV NEXT_TELEMETRY_DISABLED=1
 RUN npm run build
 
-# ---- Etapa 3: runner (la imagen que se publica) ----
+# ---- Etapa 3: tests ----
+# Parte de `build`: ya tiene Node, el código y TODAS las dependencias (la etapa
+# `deps` instala con `npm ci` a secas, sin --omit=dev, porque compilar Next
+# necesita TypeScript — y eso mismo es lo que hace que vitest esté disponible acá).
+#
+# ENTRYPOINT y no RUN: los tests corren cuando el pipeline arranca el
+# contenedor, no al construirlo, y el reporte sale por un volumen montado.
+#
+# Va en el MEDIO: si quedara última, la imagen de producción sería ésta.
+FROM build AS test
+ENTRYPOINT ["npm", "run", "test:ci"]
+
+# ---- Etapa 4: runner (la imagen que se publica) ----
 FROM node:20-alpine AS runner
 WORKDIR /app
 

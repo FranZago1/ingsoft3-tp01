@@ -13,6 +13,10 @@ node_modules/
 # Además .next/cache pesa cientos de MB y no sirve de nada adentro.
 .next/
 
+# Reporte de cobertura generado en tu máquina: el de la corrida se escribe
+# en el volumen que monta el pipeline, no adentro de la imagen.
+coverage/
+
 # Historial de git: ninguna función adentro de la imagen, y pesa.
 .git/
 
