@@ -2,8 +2,15 @@ import { Router } from "express";
 import type { Prisma, Reserva } from "@prisma/client";
 import { prisma } from "../prisma";
 import { requireAuth, usuarioDe } from "../auth";
-import { validarNuevaReserva, puedeAcceder, cambiarEstado } from "../services/reservas";
-import type { EstadoReserva, ReservaDominio } from "../services/tipos";
+import {
+  puedeAcceder,
+  cambiarEstado,
+  esEstadoAceptado,
+  rangoDelDia,
+} from "../services/reservas";
+import { crearReserva } from "../services/crear-reserva";
+import type { RepositorioReservas } from "../services/crear-reserva";
+import type { ReservaDominio } from "../services/tipos";
 import {
   pedidoInvalido,
   sinPermiso,
@@ -29,20 +36,29 @@ function aDominio(r: Reserva): ReservaDominio {
   };
 }
 
-// Rango [día 00:00, día+1 00:00) para filtrar por fecha. Devuelve null si el
-// string no es una fecha válida.
-function rangoDelDia(fecha: string): { desde: Date; hasta: Date } | null {
-  const desde = new Date(`${fecha}T00:00:00`);
-  if (isNaN(desde.getTime())) return null;
-  const hasta = new Date(desde);
-  hasta.setDate(hasta.getDate() + 1);
-  return { desde, hasta };
-}
-
 const INCLUDE_DETALLE = {
   cancha: true,
   usuario: { select: { nombre: true, email: true } },
 } as const;
+
+// El repositorio que usa la APLICACIÓN REAL. Es la otra mitad de la inyección
+// del servicio `crearReserva`: acá vive Prisma, y del otro lado no.
+// El tipo devuelto por `guardar` es el que la ruta necesita para responder.
+type ReservaConDetalle = Awaited<
+  ReturnType<typeof prisma.reserva.findUniqueOrThrow>
+>;
+
+const repositorioPrisma: RepositorioReservas<ReservaConDetalle> = {
+  buscarCancha: (id) => prisma.cancha.findUnique({ where: { id } }),
+  reservasDelDia: async (canchaId, desde, hasta) => {
+    const reservas = await prisma.reserva.findMany({
+      where: { canchaId, inicio: { gte: desde, lt: hasta } },
+    });
+    return reservas.map(aDominio);
+  },
+  guardar: (datos) =>
+    prisma.reserva.create({ data: datos, include: INCLUDE_DETALLE }),
+};
 
 // GET /api/reservas?fecha=&canchaId=  → las propias.
 // GET /api/reservas?todas=true        → todas, solo para admin.
@@ -101,70 +117,34 @@ reservasRouter.get("/:id", async (req, res, next) => {
 reservasRouter.post("/", async (req, res, next) => {
   try {
     const usuario = usuarioDe(res);
-    const { canchaId, fecha, horaInicio, horaFin } = req.body ?? {};
 
-    if (!canchaId || !fecha || !horaInicio || !horaFin) {
-      return pedidoInvalido(
-        res,
-        "Faltan datos: canchaId, fecha, horaInicio, horaFin."
-      );
-    }
-
-    const inicio = new Date(`${fecha}T${horaInicio}:00`);
-    const fin = new Date(`${fecha}T${horaFin}:00`);
-    if (isNaN(inicio.getTime()) || isNaN(fin.getTime())) {
-      return pedidoInvalido(res, "Fecha u hora con formato inválido.");
-    }
-
-    const cancha = await prisma.cancha.findUnique({ where: { id: canchaId } });
-    if (!cancha) return pedidoInvalido(res, "La cancha no existe.");
-
-    const rango = rangoDelDia(fecha);
-    if (!rango) return pedidoInvalido(res, "El parámetro fecha es inválido.");
-
-    // Traemos las reservas de esa cancha ese día y la regla de solapamiento la
-    // decide el servicio puro. La consulta la hace la ruta; la regla, el servicio.
-    // Alcanza con el día porque el horario permitido (08:00–23:00) y la duración
-    // máxima (120 min) hacen imposible que una reserva cruce la medianoche.
-    const existentes = await prisma.reserva.findMany({
-      where: { canchaId, inicio: { gte: rango.desde, lt: rango.hasta } },
-    });
-
-    // Reglas 1, 2 y 3 juntas. `ahora` se inyecta para poder testear sin reloj real.
-    const validacion = validarNuevaReserva(
-      { inicio, fin, canchaId },
-      existentes.map(aDominio),
+    // Toda la decisión vive en el servicio; acá solo se elige el código HTTP.
+    const resultado = await crearReserva(
+      req.body ?? {},
+      usuario.id,
+      repositorioPrisma,
       new Date()
     );
-    if (!validacion.ok) return reglaViolada(res, validacion.error);
 
-    const reserva = await prisma.reserva.create({
-      data: {
-        fecha: rango.desde,
-        inicio,
-        fin,
-        estado: "pendiente",
-        usuarioId: usuario.id,
-        canchaId,
-      },
-      include: INCLUDE_DETALLE,
-    });
+    if (!resultado.ok) {
+      return resultado.motivo === "pedido-invalido"
+        ? pedidoInvalido(res, resultado.error)
+        : reglaViolada(res, resultado.error);
+    }
 
-    return res.status(201).json(reserva);
+    return res.status(201).json(resultado.reserva);
   } catch (e) {
     return next(e);
   }
 });
 
-const ESTADOS_ACEPTADOS: EstadoReserva[] = ["confirmada", "cancelada"];
-
 // PATCH /api/reservas/:id/estado  { estado: "confirmada" | "cancelada" }
 reservasRouter.patch("/:id/estado", async (req, res, next) => {
   try {
     const usuario = usuarioDe(res);
-    const nuevo = req.body?.estado as EstadoReserva | undefined;
+    const nuevo = req.body?.estado;
 
-    if (!nuevo || !ESTADOS_ACEPTADOS.includes(nuevo)) {
+    if (!esEstadoAceptado(nuevo)) {
       return pedidoInvalido(res, 'estado debe ser "confirmada" o "cancelada".');
     }
 

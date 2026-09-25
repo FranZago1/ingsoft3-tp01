@@ -158,3 +158,25 @@ export function puedeAcceder(
 ): boolean {
   return usuario.rol === "admin" || usuario.id === reserva.usuarioId;
 }
+
+// Los únicos estados a los que una petición puede pedir mover una reserva.
+// "pendiente" no está: es el estado con el que nace y no se vuelve a él.
+const ESTADOS_ACEPTADOS: EstadoReserva[] = ["confirmada", "cancelada"];
+
+export function esEstadoAceptado(valor: unknown): valor is EstadoReserva {
+  return ESTADOS_ACEPTADOS.includes(valor as EstadoReserva);
+}
+
+// Rango [día 00:00, día+1 00:00) de una fecha "YYYY-MM-DD". Devuelve null si el
+// string no es una fecha válida. Es el recorte con el que se buscan las reservas
+// de una cancha ese día: alcanza con el día porque el horario permitido
+// (08:00–23:00) y la duración máxima (120 min) hacen imposible cruzar la medianoche.
+export function rangoDelDia(
+  fecha: string
+): { desde: Date; hasta: Date } | null {
+  const desde = new Date(`${fecha}T00:00:00`);
+  if (isNaN(desde.getTime())) return null;
+  const hasta = new Date(desde);
+  hasta.setDate(hasta.getDate() + 1);
+  return { desde, hasta };
+}
