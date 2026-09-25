@@ -1407,7 +1407,11 @@ el TP4**. El día que el umbral ponga uno en rojo, el merge se bloquea solo.
 
 El resultado se publica de dos formas, porque un número que nadie ve no cambia
 decisiones: una tabla de líneas/ramas/funciones en el **Summary** de la corrida, y el
-reporte HTML navegable como **artefacto descargable**. Los dos pasos llevan
+reporte HTML navegable como **artefacto descargable**. Se ve en cualquier corrida verde —por
+ejemplo [`actions/runs/36200285102`](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36200285102),
+la que introdujo todo esto ([Pull Request #21](https://github.com/FranZago1/ingsoft3-tp01/pull/21))—:
+ahí están las dos tablas en el Summary y los artefactos `coverage-backend` y
+`coverage-frontend` para bajar. Los dos pasos llevan
 `if: ${{ !cancelled() }}` para que el reporte exista **también cuando los tests
 fallaron**, que es justo cuando uno lo quiere mirar.
 
@@ -1417,3 +1421,232 @@ estuviera mal escrito y no matcheara ningún archivo, el `coverage-summary.json`
 se escribe**, con los totales en cero — y con cero archivos medidos **el umbral ni se
 evalúa**. Sin ese segundo freno, un `include` roto publica una tabla vacía y el job queda
 en verde sin haber exigido nada.
+
+### El Pull Request bloqueado: la evidencia de que el freno existe
+
+Son **dos** Pull Requests, y cada uno prueba una cosa distinta. El primero *cuenta* la
+secuencia completa; el segundo la *prueba*, porque queda frenado y a la vista.
+
+#### El primero: rojo → los tests que faltaban → verde → merge
+
+**[Pull Request #22 — Huecos libres de una cancha en un día](https://github.com/FranZago1/ingsoft3-tp01/pull/22)**
+
+Agregué `huecosLibres()` en `frontend/src/lib/agenda.ts`: calcula los tramos en los que
+una cancha se puede reservar. Es código que la app necesita de verdad —hoy el usuario
+tiene que deducir los horarios libres mirando el listado— y entró **sin un solo test**.
+
+**[La corrida roja: `actions/runs/36200604544`](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36200604544)**
+
+Y acá está el punto de todo el práctico. El log del paso dice, textual:
+
+```
+Test Files  4 passed (4)
+     Tests  57 passed (57)
+All files      |   76.19 |     98.5 |     100 |   76.19 |
+ agenda.ts     |       0 |      100 |     100 |       0 | 9-64
+ERROR: Coverage for lines (76.19%) does not meet global threshold (90%)
+```
+
+**No hay ningún error.** La imagen se construyó, el código compila, `tsc --noEmit` y el
+linter pasaron, y los **57 tests terminaron en verde**. El check `build-frontend` se puso
+rojo igual.
+
+- **Qué check**: `build-frontend`, que figura como *Required* desde el TP4.
+- **En qué métrica**: **líneas**, 76,19 % contra el umbral de 90. Las 35 líneas de
+  `agenda.ts` que ningún test recorría arrastraron el total del frontend desde 100 %.
+- **Por qué**: porque `agenda.ts` cae dentro del `include` de la cobertura, así que entró
+  a la cuenta **solo**, sin que yo tuviera que declararlo. Es exactamente el
+  comportamiento que buscaba al elegir `include` amplio con exclusiones explícitas.
+
+🔴 **Y un detalle que no esperaba, que vale como respuesta de defensa: las ramas casi no
+se movieron** (98,5 %, contra 98,48 % antes). En **vitest 3**, una función que ningún test
+llama **no suma ramas sin cubrir** — sus caminos ni se cuentan. O sea que si mi umbral
+estuviera puesto **solo sobre ramas**, este Pull Request habría pasado en verde con una
+función entera sin probar. Ésa es la razón concreta, y no teórica, por la que el umbral
+está sobre las dos métricas.
+
+**Que el freno era real lo comprobé intentando mergear, no mirando una pantalla**:
+
+```
+$ gh pr merge 22 --squash
+X Pull request #22 is not mergeable: the base branch policy prohibits the merge.
+```
+
+con `mergeStateStatus=BLOCKED` y `build-frontend: FAILURE` en el rollup de checks.
+
+**Qué escribí para arreglarlo.** Nueve tests, y el número no lo inventé: es **uno por
+cada camino que la función declara**. Los conté leyendo los `if` y los `filter` del
+código, no mirando qué pintaba de naranja el reporte —
+
+los tres filtros (otra fecha, otra cancha, cancelada), el hueco contra la apertura, el
+hueco contra el cierre, el del medio, dos reservas superpuestas que tienen que ocupar un
+solo tramo, y un hueco de 30 minutos que hay que **descartar** porque no alcanza para la
+reserva más corta que el sistema acepta. Ese último es el que más me gusta: ofrecer un
+hueco que después el backend rechaza sería peor que no ofrecer nada.
+
+Con eso el frontend volvió a **100 % de líneas y 98,73 % de ramas**, el check pasó a verde
+y el Pull Request se mergeó. La conversación del #22 tiene la secuencia entera.
+
+#### El segundo: el que queda abierto y en rojo
+
+**[Pull Request #23 — Ocupación por cancha para el panel del admin](https://github.com/FranZago1/ingsoft3-tp01/pull/23)**
+
+Chiquito, de **un archivo**: `backend/src/services/estadisticas.ts`, con el mismo problema
+**sin arreglar**. Compila, pasa el linter y los 76 tests que ya existían siguen pasando;
+la cobertura de líneas del backend cae de 100 % a **83,52 %** y el check `build-backend`
+queda en rojo.
+
+**Queda abierto hasta la defensa, a propósito.** La pantalla de configuración de los
+required checks solo la ve quien administra el repositorio, y lo que dice ahí no prueba
+que el freno funcione. Un Pull Request frenado y visible sí, y quien corrige lo puede
+comprobar por su cuenta sin depender de una captura mía.
+
+#### Por qué este freno es distinto del del TP4
+
+En el TP4 la condición era *«la imagen se construye»*. Lo único que podía frenarte era
+que algo **no compilara**: la máquina diciendo «esto no anda». Hoy no hay nada roto —todo
+compila, todos los tests pasan— y el merge está bloqueado igual por **un número que elegí
+yo**. Es la primera vez en la materia que lo que decide si un cambio entra es un criterio
+de calidad y no la corrección sintáctica.
+
+🔴 **Y qué clase de error deja pasar igual**, que es la otra mitad de la respuesta. Este
+gate mide **cuánto código se ejecutó**, no **si lo que hace está bien**. Deja pasar sin
+inmutarse:
+
+- Un test sin `assert`, que ejecuta y no comprueba (sube la cobertura, no verifica nada).
+- Una regla **bien cubierta y mal entendida**: si yo entendí que la ventana de cancelación
+  eran 2 horas y en realidad el club quería 24, mis tests congelan el error y quedan en
+  verde para siempre. Ese dato no está en el repositorio: está en lo que dijo el cliente.
+- Que el backend cambie su contrato de errores: mis tests de `pedirJson` siguen verdes
+  porque mi doble contesta la forma vieja.
+- Cualquier problema que viva en el **pegamento excluido** de la cuenta.
+
+Con esto `main` queda con **tres guardianes**, y cada uno atrapa lo que los otros no ven:
+el Pull Request obligatorio (TP1), el build verde (TP4) y ahora los tests con su umbral
+(TP5). El único que puede detectar que el **requisito** se entendió mal es el primero,
+porque para eso hay que saber qué se quiso pedir. El cuarto —el análisis estático— llega
+en el TP9.
+
+### Problemas encontrados
+
+**1. `vitest` 4 y 5 no se pueden instalar con el npm de esta máquina.** `npm i -D vitest`
+moría con `npm error Cannot read properties of null (reading 'edgesOut')`, un stack trace
+de `arborist` que no menciona ningún paquete. No es del proyecto: es un bug de npm 10.9.2
+resolviendo el conjunto de *peers opcionales* de vitest 5 (`@vitest/browser-playwright`),
+y lo busca **aunque le pidas explícitamente la 4**. Antes de eso, el intento con la 5 había
+fallado distinto y con razón: `vitest@5` exige `@types/node ≥ 22` y este proyecto usa la
+20, que es la que corresponde al `node:20-alpine` de las imágenes. Lo verifiqué
+consultando los `peerDependencies` de cada major con `npm view` en vez de ir probando.
+**Cómo lo resolví**: vitest 3.2.7, que soporta `@types/node@^20`. Lo que **no** hice fue
+`--force` ni `--legacy-peer-deps`: los dos habrían dejado un `package-lock.json` roto que
+el `npm ci` del contenedor reproduce igual de roto. Y de paso el primer intento fallido
+dejó el árbol de `node_modules` a medias, así que hubo que restaurarlo con `npm ci` antes
+de seguir.
+
+**2. `tsc` se llevaba los tests a la imagen de producción.** La etapa `build` del
+Dockerfile corre `npx tsc`, y el `tsconfig.json` incluía `src/**/*.ts` — o sea que los
+`*.test.ts` terminaban compilados adentro de `dist/`, y de ahí a la imagen final. No da
+ningún error: simplemente la imagen que se publica lleva código de tests adentro. Se
+arregla agregándolos al `exclude`. **Pero eso abrió un segundo agujero que no era
+evidente**: excluidos del `tsconfig.json`, los tests dejaban de ser typechequeados por
+nadie, porque vitest **ejecuta** TypeScript pero no lo verifica. Un test con un tipo mal
+puesto pasaría sin que nada avise. Por eso hay un `tsconfig.test.json` que existe solo
+para eso, y `npm run typecheck` corre los dos.
+
+**3. La zona horaria: el problema que habría aparecido recién en el pipeline.** Las reglas
+de esta app usan `getHours()`, o sea **hora local** (está documentado más arriba, en la
+sección de la aplicación). Mi máquina está en UTC−3 y el contenedor del pipeline corre en
+**UTC**. Si hubiera escrito las fechas de los tests como ISO con `Z`
+—`new Date("2026-09-25T10:00:00Z")`—, la misma reserva sería de las 10 acá y de las 7 en
+el runner: los tests de apertura pasarían en mi máquina y fallarían en la corrida, con un
+mensaje que no menciona en ningún momento la palabra «timezone». **La regla que adopté**:
+en los tests las fechas se construyen siempre con **componentes locales**
+(`new Date(2026, 8, 25, 10, 0)`), que significan la misma hora de reloj en cualquier lado.
+Está escrito como comentario en cada archivo de tests para que no se pierda.
+
+**4. El Docker local era demasiado lento para usarlo como bucle de verificación.** Cada
+`docker build --target test` del backend pasaba de diez minutos en esta máquina, y dos
+builds en paralelo dejaban al daemon sin responder ni a `docker ps`. **Cómo lo resolví**:
+separar lo que se puede verificar sin Docker de lo que no. Sin contenedor comprobé que la
+suite pasa, que `COVERAGE_DIR` redirige el reporte, que el `coverage-summary.json` tiene
+la forma que el paso del Summary espera, y —lo más importante— **que el umbral rompe de
+verdad**, corriendo vitest con un umbral imposible y mirando el código de salida:
+
+```
+umbral IMPOSIBLE  → exit=1     (con los 76 tests en verde)
+umbral real (90)  → exit=0
+```
+
+Lo único que quedaba sin verificar era si la etapa `test` del Dockerfile construye y corre,
+y eso lo confirmó la primera corrida, que es además el entorno que importa.
+
+**5. Elegir el umbral antes de medir habría sido inventarlo.** La tentación era poner 80
+—el número del ejemplo de la guía— y escribir la suite para superarlo. Lo hice al revés:
+escribí la suite mirando las reglas, medí, y recién con 100 y 98,8 en la mano elegí 90.
+La diferencia no es cosmética: un 80 sobre una medición de 100 habría dejado que entraran
+**28 líneas sin tests** antes de frenar, casi una función entera. El número sale de la
+medición, no del ejemplo.
+
+**6. Excluir la ruta antes de vaciarla habría inflado el número.** Iba a sacar
+`src/routes/**` de la cobertura porque «son handlers». Pero adentro todavía vivían
+`rangoDelDia()`, la construcción de las fechas y la lista de estados aceptados, que son
+**reglas**. Excluir ese archivo con las reglas adentro habría subido el porcentaje sin
+que nada estuviera más probado — la trampa exacta que el práctico no acepta. El orden
+correcto, y el que seguí, es: **primero se sacan las reglas al servicio, después se
+excluye el archivo.**
+
+### Uso de IA — TP5
+
+**Qué se hizo con asistencia de IA (Claude Code).** La sesión se usó de punta a punta:
+para leer el enunciado y mapearlo contra este stack, para escribir la suite de tests, los
+tres refactors de inyección de dependencias, las etapas `test` de los dos Dockerfiles, los
+pasos del `ci.yml` y la redacción de esta sección.
+
+**Qué se decidió a mano, y no se delegó.**
+
+- **Qué lógica testear.** La respuesta a «dónde duele un bug en esta app» —la reserva
+  doble— es de negocio, no técnica, y define toda la suite.
+- **El umbral: 90, sobre líneas y ramas.** La herramienta puede medir; cuánto margen es
+  razonable antes de frenar es un criterio que hay que poder defender.
+- **Qué entra y qué sale de la cuenta de cobertura**, y en particular la decisión de
+  declarar en voz alta el caso discutible (`src/auth.ts`) en vez de dejarlo pasar.
+- **Cuántos tests escribir para arreglar el #22**: uno por camino declarado, contados
+  leyendo el código.
+
+**Cómo se verificó.** Nada de lo que afirma esta sección sale de lo que la herramienta
+dijo haber hecho:
+
+- Que el umbral **frene de verdad**, corriendo vitest con un umbral por encima de la
+  medición y leyendo el **código de salida** (`exit=1`), no el mensaje en pantalla.
+- Que el gate **bloquee de verdad**, intentando mergear el #22 por línea de comandos y
+  recibiendo el rechazo de GitHub (`the base branch policy prohibits the merge`), igual
+  que se había hecho en el TP4.
+- Que los tests corran **adentro del contenedor** y no solo en la máquina, leyendo del log
+  de la corrida las líneas `Tests 57 passed` y la tabla de cobertura del paso
+  `Correr los tests del frontend con coverage`.
+- Que los números del contenedor **coincidan** con los locales: 100 / 98,83 en el backend
+  y 100 / 98,48 en el frontend, iguales de los dos lados.
+- Que las ramas sin cubrir fueran realmente inalcanzables, **probando entradas concretas**
+  (`"25/09/2026"`, `""`, `"2026-13-45"`) y viendo que las tres caen en el control anterior.
+- Que la versión de cada action existiera, consultando los tags por la API de GitHub antes
+  de pushear.
+- Que la etapa `test` no quedara última en ningún Dockerfile, leyendo el orden de los
+  `FROM` de los dos archivos.
+- Que el refactor no rompiera la aplicación real: los tests pasan igual si el cableado
+  quedó mal, porque le pasan el doble a mano.
+
+**Sobre los tests que escribió la IA, que es lo que este práctico pide poder defender.**
+Cada assert de la suite comprueba una regla concreta y casi todos están puestos **sobre un
+borde**: el `toContain("120")` del mensaje de duración existe porque un rechazo que no
+explica el límite obliga al usuario a adivinarlo; el `not.toHaveBeenCalled()` de
+`crear-reserva.test.ts` no mira un valor devuelto sino que **la regla frenó la escritura**;
+el `toHaveBeenCalledWith` de `http.test.ts` comprueba que la cookie de sesión se reenvía,
+porque si algún día deja de hacerlo el usuario ve su listado vacío en vez de un error.
+
+**Y qué NO está cubierto, que es la otra mitad de la pregunta**: la concurrencia. Dos
+pedidos simultáneos para el mismo horario pasan los dos la validación de solapamiento y
+crean dos reservas superpuestas, porque la consulta y el `create` no están en una
+transacción y la base no tiene una restricción que lo impida. **Ningún unit test puede
+atrapar eso** —es una carrera entre dos procesos, no una regla mal escrita— y mi cobertura
+del 100 % no dice absolutamente nada al respecto. Es el mejor ejemplo propio de por qué el
+número no es un certificado de que el código funciona.
