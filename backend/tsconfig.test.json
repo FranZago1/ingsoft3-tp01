@@ -1,0 +1,16 @@
+// El tsconfig.json de al lado EXCLUYE los *.test.ts a propósito: `npx tsc` es
+// lo que arma dist/ en el Dockerfile, y los tests no tienen que viajar a la
+// imagen de producción.
+//
+// Pero excluirlos de ahí los dejaba sin revisar por nadie: vitest ejecuta
+// TypeScript, no lo typechequea. Este config existe solo para eso —
+// `npm run typecheck` corre los dos— y no participa de ningún build.
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["node_modules", "dist"]
+}

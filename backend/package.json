@@ -7,8 +7,10 @@
     "build": "prisma generate && tsc",
     "start": "node dist/index.js",
     "lint": "eslint src",
-    "typecheck": "tsc --noEmit",
-    "seed": "prisma db seed"
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "seed": "prisma db seed",
+    "test": "vitest",
+    "test:ci": "vitest run --coverage --coverage.reportsDirectory=${COVERAGE_DIR:-coverage}"
   },
   "prisma": {
     "//": "Se invoca via `prisma db seed` para que el CLI cargue el .env solo. Corriendo `node prisma/seed.mjs` directo, DATABASE_URL tiene que estar ya en el entorno.",
@@ -27,9 +29,11 @@
     "@types/express": "^4.17.21",
     "@types/jsonwebtoken": "^9.0.7",
     "@types/node": "^20.17.16",
+    "@vitest/coverage-v8": "^3.2.7",
     "eslint": "^9.19.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.3",
-    "typescript-eslint": "^8.22.0"
+    "typescript-eslint": "^8.22.0",
+    "vitest": "^3.2.7"
   }
 }
