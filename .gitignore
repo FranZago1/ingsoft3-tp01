@@ -8,6 +8,9 @@ build/
 next-env.d.ts
 *.tsbuildinfo
 
+# reportes de cobertura: los genera cada corrida, no se versionan
+coverage/
+
 # secretos: NUNCA se versionan
 .env
 *.local

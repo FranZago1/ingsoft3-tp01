@@ -39,14 +39,29 @@ RUN apk add --no-cache openssl
 COPY package.json package-lock.json ./
 RUN npm ci
 
-COPY tsconfig.json ./
+COPY tsconfig.json vitest.config.ts ./
 COPY prisma ./prisma
 COPY src ./src
 # `prisma generate` también acá porque el código compilado importa los tipos
-# del cliente; `tsc` deja el JavaScript en dist/.
+# del cliente; `tsc` deja el JavaScript en dist/. Los *.test.ts quedan fuera de
+# dist porque el tsconfig los excluye: viajan en la imagen de tests, no en la final.
 RUN npx prisma generate && npx tsc
 
-# ---- Etapa 3: runner (la imagen que se publica) ----
+# ---- Etapa 3: tests ----
+# Parte de `build` porque ahí ya está todo lo que un test necesita: Node, el
+# código fuente y las devDependencies (vitest incluido). No se copia nada de
+# nuevo y no se vuelve a instalar nada.
+#
+# Es ENTRYPOINT y no RUN: así los tests NO corren al construir la imagen, sino
+# cuando el pipeline la arranca — y el reporte de cobertura sale por un volumen
+# montado, que es el mismo mecanismo que ya usa el resto del proyecto.
+#
+# Va en el MEDIO a propósito: si fuera la última etapa, `docker build` sin
+# --target publicaría el contenedor de tests como imagen de producción.
+FROM build AS test
+ENTRYPOINT ["npm", "run", "test:ci"]
+
+# ---- Etapa 4: runner (la imagen que se publica) ----
 # Sin TypeScript, sin código fuente, sin devDependencies: solo Node, las
 # dependencias de producción y el dist/ ya compilado.
 FROM node:20-alpine AS runner

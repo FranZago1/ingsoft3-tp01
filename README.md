@@ -9,8 +9,10 @@ Sistema de reservas de canchas de pádel para un club. Proyecto de la materia
 Stack: **Express + Prisma + PostgreSQL 15** (backend) · **Next.js 15 App Router +
 TypeScript + Tailwind** (frontend) · todo en TypeScript.
 
-> **Estado:** la aplicación está terminada y contenerizada (TP2) y cada Pull Request
-> construye las dos imágenes antes de poder mergearse (TP4). Los tests son el TP5.
+> **Estado:** la aplicación está terminada y contenerizada (TP2), y cada Pull Request
+> construye las dos imágenes **y corre la suite de tests con su umbral de cobertura**
+> antes de poder mergearse (TP4 + TP5). Un cambio que compila y pasa todos los tests
+> puede quedar frenado igual si la cobertura no llega al número declarado.
 
 Este repositorio arrastra **todos los TP de la materia**: arrancó con el TP1 (ramas
 protegidas, pull requests, conflictos y release `v1.0.0`) y desde el TP2 aloja además
@@ -145,8 +147,11 @@ frontend/
   src/lib/        cliente de la API, validaciones puras de formularios
 ```
 
-Esa separación existe para poder testear las reglas **sin base de datos y sin servidor**
-(TP4/TP5). Ver `decisiones.md`.
+Esa separación es la que permite testear las reglas **sin base de datos y sin servidor**:
+los servicios reciben los datos ya consultados y el reloj por parámetro. El único que
+necesita hablar con la base, `services/crear-reserva.ts`, **recibe el repositorio desde
+afuera** — la app real le pasa uno hecho con Prisma y el test le pasa un doble. Ver
+`decisiones.md`.
 
 ---
 
@@ -249,6 +254,8 @@ Ver `.env.example` y `backend/.env.example`.
 | `npm run lint` | ESLint. |
 | `npm run typecheck` | `tsc --noEmit`. |
 | `npm run seed` | Siembra datos (idempotente). |
+| `npm test` | Tests en modo watch (vitest). |
+| `npm run test:ci` | Tests + cobertura, con el umbral que frena. |
 
 ### `frontend/`
 
@@ -259,14 +266,40 @@ Ver `.env.example` y `backend/.env.example`.
 | `npm start` | Sirve el build. |
 | `npm run lint` | ESLint. |
 | `npm run typecheck` | `tsc --noEmit`. |
+| `npm test` | Tests en modo watch (vitest). |
+| `npm run test:ci` | Tests + cobertura, con el umbral que frena. |
 
 ---
 
 ## Tests
 
-**Todavía no hay tests: son el TP4/TP5.** Lo que sí está listo es la testeabilidad:
-reglas puras en `backend/src/services/`, validaciones puras en
-`frontend/src/lib/validacion.ts` y la app de Express montable sin `listen()`.
+Suite de unit tests con **vitest** de los dos lados, sobre las reglas de negocio.
+Los tests viven al lado del código que prueban (`algo.test.ts`).
+
+| Script | Qué hace |
+| --- | --- |
+| `npm test` | Modo watch, mientras escribís (se sale con `q`). |
+| `npm run test:ci` | Una corrida con cobertura. **Es el mismo comando que usa el pipeline.** |
+
+```bash
+cd backend && npm run test:ci      # y lo mismo en frontend/
+```
+
+**La cobertura tiene un umbral que rompe el build**: 90 % de líneas y 90 % de ramas,
+declarado en el `vitest.config.ts` de cada lado. Si la medición queda por debajo,
+`vitest` sale con error aunque todos los tests pasen — el contenedor devuelve ese
+error, el job se pone rojo y el merge queda bloqueado. Qué entra en la cuenta y por
+qué ese número está en `decisiones.md`.
+
+Los tests corren **adentro del contenedor**, en la etapa `test` de cada Dockerfile:
+
+```bash
+docker build --target test -t backend-test:ci ./backend
+docker run --rm -e COVERAGE_DIR=/salida/reporte -v "$PWD/backend-coverage:/salida" backend-test:ci
+```
+
+El reporte navegable queda como artefacto descargable de cada corrida, y el resumen
+se publica en la página del run.
 
 ---
 

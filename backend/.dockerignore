@@ -14,6 +14,10 @@
 # Salida de tsc: la imagen la vuelve a generar en la etapa de build.
 **/dist/
 
+# Reporte de cobertura generado en tu máquina: el de la corrida se escribe
+# en el volumen que monta el pipeline, no adentro de la imagen.
+coverage/
+
 # Historial de git: no tiene ninguna función adentro de la imagen y pesa.
 .git/
 
