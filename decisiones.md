@@ -1107,3 +1107,313 @@ dijo haber hecho:
 artefacto desplegable, sin encadenar), la decisión de construir con el Dockerfile en
 vez de compilar en el workflow con su contrapartida, y la lectura de qué capas se
 reutilizan y por qué, que es una propiedad del Dockerfile del TP2 y no del pipeline.
+
+---
+
+## TP5 — Calidad automatizada: tests, coverage y el umbral que frena un merge
+
+El TP4 dejó un pipeline que construye las dos imágenes en cada Pull Request y las exige
+como *required checks* de `main`. Lo que no hacía era ejecutar una sola línea de
+comportamiento: que compile no dice que ande. Esta sección cuenta cómo se agregó esa
+capa y, sobre todo, **por qué un número que elegí yo ahora puede frenar un merge**.
+
+### Qué lógica elegí testear, y por qué ésa
+
+La pregunta que ordena la suite es **dónde duele un bug en esta app**. Y la respuesta no
+es "en el login": es **una cancha reservada dos veces en el mismo horario**. Ese error no
+tira una excepción, no rompe ninguna pantalla y nadie lo ve hasta que dos parejas se
+presentan a la misma hora. Es un bug que el sistema no puede detectar solo, porque el
+estado resultante es perfectamente válido para la base de datos.
+
+Por eso la suite ataca primero `backend/src/services/reservas.ts`, y adentro:
+
+| Regla | Qué protege | Por qué importa |
+| --- | --- | --- |
+| 1 · solapamiento | Dos reservas no pisadas en la misma cancha | El bug caro, el que se descubre en la cancha |
+| 2 · horario | 08:00–23:00, entre 60 y 120 minutos | Todos sus límites son **bordes**: `<` contra `<=` |
+| 3 · no pasado | No se reserva hacia atrás | Depende del reloj: sin inyectarlo no se puede testear |
+| 4 · transiciones | `pendiente→confirmada→cancelada` | Una máquina de estados: lo que NO se puede hacer importa más |
+| 5 · ventana de 2 h | Una confirmada no se cancela sobre la hora | Regla de negocio pura, invisible en el código de la UI |
+| 6 · autorización | Cada uno ve lo suyo; el admin, todo | Un error acá es una fuga de datos |
+| 7 · registro | Email válido, contraseña de 8+ | La única que el usuario ve fallar todos los días |
+
+**El criterio que usé para saber si un test vale**: si invierto la regla que prueba, algo
+se tiene que poner en rojo. Por eso casi todos los casos están escritos **sobre el
+borde** y no en el medio: una reserva de 60 minutos exactos se acepta, una de 59 no;
+cancelar exactamente 2 horas antes se puede, 1 h 59 no; dos reservas contiguas (10–11 y
+11–12) **no** se solapan. Un test con una reserva de 90 minutos no protege nada — pasa
+igual si alguien mueve el límite a 45 o a 200.
+
+Lo que quedó **afuera** de la suite, a propósito: los componentes de React y las
+pantallas. Testear la UI unitariamente requiere jsdom y Testing Library, y verifica que
+un botón se pinte, no que una regla se cumpla. Esa verificación se hace de punta a punta
+contra la app desplegada, y es el TP7.
+
+### Números de la suite
+
+| | Métodos de test | Casos ejecutados | Reglas cubiertas |
+| --- | --- | --- | --- |
+| Backend | 48 | 76 | 7 |
+| Frontend | 39 | 57 | 5 (las que espeja del backend) |
+
+📌 **Métodos y casos no son lo mismo, y el mínimo se cuenta en métodos.** Un `it.each`
+con siete filas es **un** test, no siete: por eso la primera columna es la que importa.
+Los 87 métodos se reparten sobre reglas distintas, no sobre siete datos de la misma.
+
+### Mi stack no es el de la cátedra: qué herramienta cubre cada cosa
+
+La guía está escrita sobre .NET + vitest. Esta app es Node/TypeScript de los dos lados
+(Express + Prisma en el backend, Next.js en el frontend), así que cada fila de la tabla
+«Tu stack, de un vistazo» se resolvió así:
+
+| Lo que hay que lograr | Con qué lo hice |
+| --- | --- |
+| Dónde viven los tests | Al lado del código: `reservas.ts` → `reservas.test.ts` |
+| Un test parametrizado | `it.each` de vitest (el equivalente del `[Theory]`/`[InlineData]`) |
+| Que la dependencia entre desde afuera | Un parámetro de la función, tipado con un `type` propio |
+| Fabricar el doble | `vi.fn()`, que viene con vitest: no hay que instalar un Moq |
+| Medir la cobertura | `@vitest/coverage-v8` (provider V8) |
+| **Un umbral que ROMPE el build** | `coverage.thresholds` del `vitest.config.ts` |
+| **Qué ENTRA en la cuenta** | `coverage.include` / `coverage.exclude` del mismo archivo |
+| Reporte legible | Reporters `html` (navegable) + `json-summary` (el que lee el pipeline) |
+| Que las herramientas entren al contenedor | Una etapa `FROM build AS test`: la etapa `build` ya instala con `npm ci` **sin** `--omit=dev` |
+
+**Una sola herramienta para los dos lados** fue una decisión, no una casualidad: vitest
+corre TypeScript sin configuración previa, y tener el mismo runner, el mismo `it.each` y
+el mismo `vi.fn()` en el back y en el front significa una sola cosa que entender y una
+sola que explicar.
+
+### Los tres refactors: lo que hubo que abrir para poder testear
+
+Ésta es la parte que más código de producción tocó, y la lección es la de la clase: **si
+algo es difícil de testear, el problema suele ser el diseño, no el test.**
+
+**1 · `backend/src/services/crear-reserva.ts` (nuevo) — el que hace posible el mock.**
+Antes, el handler de `POST /api/reservas` tenía 56 líneas que mezclaban tres cosas:
+parsear el pedido, aplicar reglas y hablar con Prisma. Prisma entraba por un `import`
+estático, así que **no había forma de probar esa lógica sin una base levantada** — no era
+difícil, era imposible. Ahora la lógica vive en un servicio que **recibe su repositorio
+por parámetro**:
+
+```ts
+export type RepositorioReservas<T> = {
+  buscarCancha(id: string): Promise<{ id: string } | null>;
+  reservasDelDia(canchaId: string, desde: Date, hasta: Date): Promise<ReservaDominio[]>;
+  guardar(datos: DatosNuevaReserva): Promise<T>;
+};
+
+export async function crearReserva<T>(pedido, usuarioId, repo: RepositorioReservas<T>, ahora: Date)
+```
+
+Quien lo construye decide qué le pasa: la aplicación real le pasa un repositorio armado
+con Prisma (vive en `routes/reservas.ts`, que es donde corresponde), y el test le pasa
+tres `vi.fn()`. El handler quedó en 14 líneas que solo eligen el código HTTP.
+
+🔴 **Lo que cambió y lo que NO.** Ninguna regla se movió de lugar ni se relajó: las
+validaciones siguen siendo las mismas funciones puras de antes, llamadas en el mismo
+orden. Lo único que cambió es **de dónde viene la base**. Si el refactor hubiera perdido
+una validación, el test con mock quedaría verde sobre un servicio que dejó de validar, y
+eso es peor que no tener el test.
+
+También se movieron a los servicios dos cosas que eran **reglas viviendo en la ruta**:
+`rangoDelDia()` y la lista de estados aceptados (`esEstadoAceptado()`). Esto no es
+cosmética: en la sección de exclusiones se saca `src/routes/**` de la cuenta de
+cobertura, y sacar de la medición un archivo que todavía tiene reglas adentro es
+exactamente la trampa que infla el porcentaje. **Primero se sacan las reglas, después se
+excluye el archivo.**
+
+**2 · `frontend/src/lib/http.ts` (nuevo) — el mock del frontend.**
+`apiGet` empezaba con `await cookies()` de `next/headers` y llamaba a `fetch` adentro:
+el mismo problema con otra cara. Se separó **cómo se lee una respuesta** (los tres
+caminos: 200, error con cuerpo, y el backend que no contesta) de **quién la trae**:
+
+```ts
+export async function pedirJson<T>(url: string, cookieHeader: string, traer: Traer = fetch)
+```
+
+`api.ts` quedó en dos líneas: lee la cookie, arma la URL absoluta y delega.
+
+**3 · `frontend/src/lib/token.ts` (nuevo).** `getSesion()` tenía comportamiento real
+—parsear el payload del JWT, mirar el vencimiento, normalizar el rol— pegado a una línea
+de `cookies()`. Se separó en una función pura `sesionDeToken(token, ahora)` con el reloj
+inyectado, igual que en el backend. `sesion.ts` quedó como pegamento de tres líneas.
+
+📌 **Y un paso que los tests no reclaman.** En los tres casos, después de abrir el código
+hay que acordarse de **cablear la dependencia real**: si me olvido, la suite queda verde
+—el test le pasa el doble a mano— y la aplicación queda rota. Por eso la verificación no
+fue "los tests pasan", fue levantar la app con `docker compose up` y pegarle un `curl` al
+endpoint que usa cada pieza.
+
+### El umbral: 90 % de líneas y 90 % de ramas, en los dos lados
+
+**El número, anclado en la medición real.** Con la suite completa y en verde, hoy mido:
+
+| | Líneas | Ramas | Funciones | Base medida |
+| --- | --- | --- | --- | --- |
+| Backend | **100 %** (213/213) | **98,83 %** (85/86) | 100 % (18/18) | 213 líneas |
+| Frontend | **100 %** (144/144) | **98,48 %** (65/66) | 100 % (13/13) | 144 líneas |
+
+Puse **90** porque mido 100 y 98,8 y quiero que el umbral me frene cuando **me olvide de
+testear algo**, no cuando agregue un `if` defensivo. Con 90 sobre una base de 144 líneas
+en el frontend, hacen falta unas **17 líneas sin cubrir** para que el build se ponga
+rojo: eso es "entró una función sin tests", que es justo lo que quiero que frene. Un 95
+me frenaría con 8 líneas y me empujaría a escribir tests de relleno para volver al verde,
+que es la peor consecuencia posible de un gate.
+
+**Sobre qué métrica: las dos, línea y rama.** El umbral de líneas solo es el más generoso
+de todos —es la métrica que este práctico llama la menos honesta—, porque ejecutar una
+línea no dice que se hayan recorrido sus dos caminos. Declarar las dos significa que
+frena la que quede corta. **El número de rama, que se pide aunque no fuera el umbral, es
+98,83 % en el backend y 98,48 % en el frontend.**
+
+🔴 **Y hay un detalle que conviene decir antes de que lo pregunten: 100 % de ramas es
+inalcanzable acá, y a propósito.** La única rama sin cubrir de cada lado es una que
+**ninguna entrada puede recorrer** (está explicado abajo, en el ejercicio del camino sin
+cubrir). O sea que el techo real de esta suite es ~98,8 y ~98,5, no 100. Un umbral de 100
+en ramas pondría el build en rojo para siempre por dos `if` que son guardas de tipos.
+
+**Qué haría falta para subirlo a 95.** Nada del lado de los tests: ya estoy arriba. Lo
+que haría falta es **ampliar lo que se mide**, y ahí el candidato honesto es
+`src/auth.ts` (ver abajo). Subir el umbral sin ampliar la medición no exigiría más
+calidad, solo dejaría menos margen.
+
+### Qué dejé afuera de la cuenta, y por qué cada cosa
+
+El criterio es el de la teoría: el umbral se aplica **sobre lo que tiene sentido
+testear**. Y la forma de escribirlo importa: en el backend se **incluye todo `src`** y se
+excluye a mano, en vez de listar lo que sí entra. Con `include` de una carpeta, un
+archivo nuevo que me olvide de nombrar **nace invisible para el umbral**, y un control
+que falla hacia el número alto no es un control.
+
+**Backend** (`backend/vitest.config.ts`):
+
+| Fuera de la cuenta | Por qué |
+| --- | --- |
+| `src/index.ts` | El arranque. No hay reglas ahí, y si está mal la app no levanta: me entero sin un test |
+| `src/app.ts` | Cableado de Express: monta routers, no decide nada |
+| `src/prisma.ts` | Infraestructura: instancia el cliente |
+| `src/env.ts` | Configuración |
+| `src/http.ts` | Mapeo de `Resultado` a código HTTP: una tabla, sin comportamiento |
+| `src/routes/**` | Pegamento, **después del refactor**: parsean, delegan y responden |
+| `src/auth.ts` | bcrypt, JWT y tipos de Express: librerías de terceros, no reglas mías |
+| `src/services/tipos.ts` | Tipos, sin comportamiento |
+
+🔴 **El caso discutible, y prefiero decirlo yo: `src/auth.ts`.** Está afuera porque es la
+frontera con bcrypt y con `jsonwebtoken`, y testear eso es testear la librería. Pero
+adentro hay una función que **sí** es comportamiento mío: `leerCookie()`, un parseo a
+mano del header `Cookie`. Sacarla a una función pura y meterla en la cuenta es
+exactamente lo que haría falta para subir el umbral con sentido, y es lo que haría si
+siguiera trabajando en esto.
+
+**Frontend** (`frontend/vitest.config.ts`): se incluye `src/lib/**` —la carpeta donde
+vive la lógica— y quedan afuera `tipos.ts` (tipos sin comportamiento), y `api.ts` y
+`sesion.ts`, que **después del refactor** son tres líneas de pegamento con `next/headers`
+cada uno: su comportamiento se mudó a `http.ts` y `token.ts`, que sí se miden.
+
+Las páginas y los componentes quedan afuera de `include` porque son UI. Eso **no** es
+esconder lo que no testeé: es que la verificación correcta para una pantalla es de punta
+a punta con todo levantado, y ésa es la del TP7.
+
+### Por qué una cobertura alta no garantiza calidad
+
+La cobertura mide **ejecución**, no **verificación**. Con mi propio código:
+
+```ts
+it("valida el horario", () => {
+  validarHorario(alas(10), alas(11));   // se ejecutó entero… y no comprueba nada
+});
+```
+
+Ese test recorre `validarHorario` de punta a punta, suma cobertura de líneas y de varias
+ramas, y **no mata un solo mutante**: si mañana alguien cambia `60` por `45`, sigue verde.
+Un porcentaje alto conseguido así es falsa confianza medida con precisión.
+
+**Y el segundo ejemplo, que es más incómodo porque es real y está en mi suite.** Los
+tests de `pedirJson` están al 100 % y verifican que un error de la API se propaga leyendo
+`cuerpo.error`. Si mañana el backend cambiara su contrato de errores de `{ error }` a
+`{ message }`, **mi cobertura seguiría en 100 % y mis tests seguirían en verde**, porque
+mi doble sigue contestando la forma vieja. El frontend se rompería igual en producción.
+Esto no es un defecto del test: es su límite. Un unit test prueba **mi** código, no la
+conexión entre las dos piezas — eso es el TP7.
+
+De ahí la lectura práctica: **una cobertura baja sí es señal confiable** de problema (hay
+código que nadie ejercita), pero **una cobertura alta no es señal confiable** de calidad.
+Sirve como detector de agujeros y como tendencia, no como trofeo.
+
+### El ejercicio del camino sin cubrir
+
+El reporte de cobertura me marcó cuatro ramas que ningún test recorría. Dos resultaron
+agujeros de verdad y las cubrí; dos son inalcanzables. Van las cuatro, porque la
+diferencia entre unas y otras es el punto del ejercicio.
+
+**La que elijo como respuesta, porque es la más interesante: `backend/src/services/crear-reserva.ts:90`.**
+
+1. **Qué línea es.** `if (!rango) return pedidoInvalido("El parámetro fecha es inválido.");`
+   El reporte la marca en naranja: la línea se ejecuta siempre, pero solo por el camino
+   `false`.
+2. **Qué entrada la recorrería.** **Ninguna.** Para llegar a la línea 90 hay que haber
+   pasado, cuatro líneas antes, el control de que `new Date(`${fecha}T${horaInicio}:00`)`
+   sea una fecha válida. Si ese string parsea, entonces `new Date(`${fecha}T00:00:00`)`
+   —que es lo único que hace `rangoDelDia`— también parsea, así que nunca devuelve `null`
+   en este punto. Probé con `"25/09/2026"`, con `""` y con `"2026-13-45"`: las tres caen
+   en el control anterior, con otro mensaje.
+3. **Qué decidí: no agregar el test.** La rama no existe porque haya un caso de negocio
+   sin cubrir, existe porque `rangoDelDia` devuelve `{...} | null` y TypeScript **obliga**
+   a estrechar el tipo antes de usar `rango.desde`. Es una guarda del compilador, no un
+   camino. Y tampoco corresponde borrarla: sin ella el código no compila. Lo honesto es
+   dejarla y saber que ese 1,17 % que le falta a las ramas del backend **es esto**, y no
+   una regla sin probar.
+
+**La misma situación, del lado del frontend: `src/lib/validacion.ts:107`**, el `?? []` de
+`transicionesDisponibles`. Es la rama que la guía advierte que "ninguna línea declara":
+no hay un `if` a la vista, la abre el operador. Ninguna entrada la recorre mientras el
+parámetro sea un `EstadoReserva`, porque las tres claves están en el objeto. Tampoco la
+agregué.
+
+**Y las dos que SÍ eran agujeros**, que es lo que el ejercicio vale la pena:
+
+- `services/reservas.ts` — la rama «la reserva no puede empezar a las 23:00» no la
+  recorría nadie. Buscando qué entrada la alcanzaba apareció el caso: **una reserva de
+  23:00 a 00:00**, que dura 60 minutos exactos y cuya hora de fin (`00:00`), comparada
+  como hora de reloj, es *menor* que las 23:00 — así que se cuela por el control del
+  cierre y la frena el otro. Le escribí el test. Sin abrir el reporte no se me hubiera
+  ocurrido que una reserva puede cruzar la medianoche.
+- `services/reservas.ts` — dentro de `cambiarEstado`, la rama que corta cuando la ventana
+  de 2 horas no se cumple. Yo tenía probada la regla 4 por un lado y la regla 5 por el
+  otro, pero **nunca su encadenamiento**: la cobertura me mostró que la composición no
+  estaba verificada. Le escribí el test.
+
+### Cómo corre en el pipeline
+
+Los tests corren **adentro del contenedor**, en una etapa nueva del Dockerfile
+(`FROM build AS test`), y no como un paso de Node en el workflow. Es la misma decisión
+del TP4: el pipeline no sabe cómo se compila ni cómo se testea esta app, se lo sigue
+pidiendo al Dockerfile. La etapa parte de `build` porque ahí ya está todo lo que hace
+falta —Node, el código y las devDependencies, porque `npm ci` corre **sin**
+`--omit=dev`— y no reinstala nada.
+
+🔴 **La etapa va en el MEDIO, entre `build` y `runner`.** Si quedara última, un
+`docker build` sin `--target` publicaría el contenedor de tests como imagen de
+producción, y nada se pondría rojo.
+
+Y es `ENTRYPOINT`, no `RUN`: así los tests no corren al construir la imagen sino cuando
+el pipeline la arranca, y el reporte sale por un volumen montado — el mismo mecanismo que
+el proyecto ya usaba.
+
+**Lo que se agregó al `ci.yml` son cuatro pasos por job, y ningún job nuevo.** Eso último
+es deliberado y es lo que hace que no haya que tocar la protección de `main`: los tests
+corren dentro de `build-backend` y `build-frontend`, que **ya son required checks desde
+el TP4**. El día que el umbral ponga uno en rojo, el merge se bloquea solo.
+
+El resultado se publica de dos formas, porque un número que nadie ve no cambia
+decisiones: una tabla de líneas/ramas/funciones en el **Summary** de la corrida, y el
+reporte HTML navegable como **artefacto descargable**. Los dos pasos llevan
+`if: ${{ !cancelled() }}` para que el reporte exista **también cuando los tests
+fallaron**, que es justo cuando uno lo quiere mirar.
+
+📌 **Dos frenos en el paso del Summary, y hacen falta los dos.** El `test -f` cubre que el
+archivo no esté. El `if (!t.lines.total)` cubre el caso silencioso: si el `include`
+estuviera mal escrito y no matcheara ningún archivo, el `coverage-summary.json` **igual
+se escribe**, con los totales en cero — y con cero archivos medidos **el umbral ni se
+evalúa**. Sin ese segundo freno, un `include` roto publica una tabla vacía y el job queda
+en verde sin haber exigido nada.
