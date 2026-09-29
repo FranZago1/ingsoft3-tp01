@@ -33,7 +33,8 @@ export default function LoginPage() {
 
   return (
     <div className="mx-auto max-w-sm">
-      <h1 className="mb-4 text-2xl font-bold">Ingresar</h1>
+      <h1 className="mb-1 text-2xl font-bold">Ingresar</h1>
+      <p className="mb-4 text-sm text-gray-600">Reservá tu cancha de pádel en segundos.</p>
       <form onSubmit={onSubmit} className="space-y-3">
         <input
           className="w-full rounded border p-2"
