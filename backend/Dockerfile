@@ -99,6 +99,13 @@ RUN chmod +x /app/docker-entrypoint.sh
 # de la app no cae en un root del contenedor.
 USER node
 
+# TP6: el commit que produjo la imagen, para que /api/health lo informe. Lo
+# pasa el pipeline como build-arg. Va al final del runner a propósito: un ARG
+# que cambia en cada commit invalida el cache de todo lo que viene después, y
+# acá abajo ya no queda nada caro. (En Render manda RENDER_GIT_COMMIT.)
+ARG APP_COMMIT=desconocido
+ENV APP_COMMIT=$APP_COMMIT
+
 # Documenta el puerto; el que manda es PORT (default 8080, ver src/env.ts).
 EXPOSE 8080
 
