@@ -9,6 +9,13 @@ on:
 jobs:
   build-backend:
     runs-on: ubuntu-latest
+    # TP6: por job y no a nivel del workflow. `permissions:` arriba de todo
+    # REEMPLAZA el default de todos los jobs; acá sólo toca al que publica.
+    # contents: read no es de más: lo que no se lista queda sin permiso, y sin
+    # él el checkout no puede leer el código.
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Qué estamos verificando
         env:
@@ -20,15 +27,6 @@ jobs:
 
       - name: Preparar el constructor que sabe cachear
         uses: docker/setup-buildx-action@v4
-
-      - name: Construir la imagen del backend
-        uses: docker/build-push-action@v7
-        with:
-          context: ./backend          # acá está el Dockerfile del backend (TP2)
-          push: false                 # todavía no publicamos la imagen en ningún lado
-          tags: backend:ci            # el nombre de la imagen (hoy sólo vive dentro del runner)
-          cache-from: type=gha,scope=backend
-          cache-to: type=gha,mode=max,scope=backend
 
       # A partir de acá, el TP5: los tests y su cobertura. No es un job nuevo —
       # van adentro de build-backend a propósito, porque ése ya es un required
@@ -70,8 +68,42 @@ jobs:
           name: coverage-backend
           path: backend-coverage
 
+      # ---- TP6: el cierre del CI. Publicar es lo ÚLTIMO del job, a propósito ----
+      # No hay ningún `if` que diga «si los tests pasaron»: no hace falta. Los
+      # steps corren en orden y se cortan al primer error, así que si el
+      # `docker run` de los tests da rojo, estos dos pasos nunca llegan a correr.
+      # La condición está en el ORDEN. Y no llevan `!cancelled()` ni `always()`
+      # (como los del reporte): eso los haría correr con los tests en rojo.
+      - name: Entrar al registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # el token de la corrida: ningún secret nuevo
+
+      - name: Construir y publicar la imagen del backend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./backend
+          # Las dos condiciones, no una: sólo un push a main publica. Si algún
+          # día el disparador escucha otra rama, la garantía sigue acá.
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          # En minúsculas y a mano: el registry no acepta mayúsculas y
+          # github.repository es «FranZago1/…». La etiqueta es el commit.
+          tags: ghcr.io/franzago1/ingsoft3-tp01-backend:sha-${{ github.sha }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
   build-frontend:
     runs-on: ubuntu-latest
+    # TP6: por job y no a nivel del workflow. `permissions:` arriba de todo
+    # REEMPLAZA el default de todos los jobs; acá sólo toca al que publica.
+    # contents: read no es de más: lo que no se lista queda sin permiso, y sin
+    # él el checkout no puede leer el código.
+    permissions:
+      contents: read
+      packages: write
     steps:
       - name: Qué estamos verificando
         env:
@@ -83,15 +115,6 @@ jobs:
 
       - name: Preparar el constructor que sabe cachear
         uses: docker/setup-buildx-action@v4
-
-      - name: Construir la imagen del frontend
-        uses: docker/build-push-action@v7
-        with:
-          context: ./frontend
-          push: false
-          tags: frontend:ci
-          cache-from: type=gha,scope=frontend
-          cache-to: type=gha,mode=max,scope=frontend
 
       - name: Construir la etapa de tests del frontend
         uses: docker/build-push-action@v7
@@ -129,3 +152,25 @@ jobs:
         with:
           name: coverage-frontend
           path: frontend-coverage
+
+      # ---- TP6: publicar, último paso del job (el porqué, en build-backend) ----
+      - name: Entrar al registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}   # el token de la corrida: ningún secret nuevo
+
+      - name: Construir y publicar la imagen del frontend
+        uses: docker/build-push-action@v7
+        with:
+          context: ./frontend
+          # Las dos condiciones, no una: sólo un push a main publica. Si algún
+          # día el disparador escucha otra rama, la garantía sigue acá.
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          # En minúsculas y a mano: el registry no acepta mayúsculas y
+          # github.repository es «FranZago1/…». La etiqueta es el commit.
+          tags: ghcr.io/franzago1/ingsoft3-tp01-frontend:sha-${{ github.sha }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
