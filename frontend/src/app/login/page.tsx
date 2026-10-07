@@ -39,6 +39,7 @@ export default function LoginPage() {
         <input
           className="w-full rounded border p-2"
           type="email"
+          aria-label="Email"
           placeholder="Email"
           value={email}
           onChange={(e) => setEmail(e.target.value)}
@@ -46,11 +47,16 @@ export default function LoginPage() {
         <input
           className="w-full rounded border p-2"
           type="password"
+          aria-label="Contraseña"
           placeholder="Contraseña"
           value={password}
           onChange={(e) => setPassword(e.target.value)}
         />
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {error && (
+          <p role="alert" className="text-sm text-red-600">
+            {error}
+          </p>
+        )}
         <button
           type="submit"
           disabled={!valido}

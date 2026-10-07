@@ -26,3 +26,10 @@ coverage/
 
 *.log
 tsconfig.tsbuildinfo
+
+# Pruebas de integración y e2e (TP7): corren DESDE el runner CONTRA el entorno
+# desplegado; no tienen nada que hacer adentro de la imagen.
+e2e/
+playwright.config.js
+playwright-report/
+test-results/

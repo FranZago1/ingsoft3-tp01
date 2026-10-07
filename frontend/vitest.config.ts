@@ -1,7 +1,11 @@
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // TP7: vitest matchea por default todo *.spec.js, incluidos los de
+    // Playwright, y explota (con eso rojo, build-frontend frena toda la cadena).
+    // Cada runner con su carpeta: e2e/ es de Playwright.
+    exclude: [...configDefaults.exclude, "e2e/**"],
     coverage: {
       provider: "v8",
       // `json-summary` deja el coverage-summary.json que lee el pipeline para

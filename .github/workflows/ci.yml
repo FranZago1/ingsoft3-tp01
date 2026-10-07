@@ -230,9 +230,86 @@ jobs:
           done
           echo "❌ QA no quedó corriendo $GITHUB_SHA a tiempo"; exit 1
 
+  # ---- TP7: las dos suites, en el orden de la cadena, como gate de PROD ----
+  # Las dos corren DESDE el runner CONTRA QA, que ya ejecuta la imagen de esta
+  # corrida (el smoke de deploy-qa lo comprobó). Las URLs van a mano: estos
+  # jobs no tienen environment, así que no ven las vars de `qa`.
+  integracion:
+    runs-on: ubuntu-latest
+    needs: deploy-qa                         # QA ya ejecuta la imagen de ESTA corrida
+    timeout-minutes: 15
+    steps:
+      - name: Bajar el código al runner
+        uses: actions/checkout@v6
+
+      - name: Preparar Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      # Sin `playwright install`: estas pruebas no abren navegador.
+      - name: Instalar (sin navegador)
+        run: npm ci
+        working-directory: ./frontend
+
+      - name: Integración contra la api de QA
+        env:
+          API_BASE_URL: https://reservapadel-api-qa.onrender.com   # la API, no el front
+        run: npx playwright test e2e/api.spec.js
+        working-directory: ./frontend
+
+      - name: Publicar el reporte de integración
+        uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}              # el reporte importa MÁS cuando falla
+        with:
+          name: playwright-report-integracion   # distinto del de e2e: dos iguales rompen la corrida
+          path: frontend/playwright-report
+          retention-days: 14
+
+  e2e:
+    runs-on: ubuntu-latest
+    needs: integracion                       # api rota → no se gasta un navegador en confirmarlo
+    timeout-minutes: 20                      # si algo se cuelga, el job muere en vez de esperar horas
+    steps:
+      - name: Bajar el código al runner
+        uses: actions/checkout@v6
+
+      - name: Preparar Node
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Instalar + navegador
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+        working-directory: ./frontend
+
+      - name: e2e contra el front de QA
+        env:
+          E2E_BASE_URL: https://reservapadel-front-qa.onrender.com
+        run: npx playwright test e2e/reservas.spec.js   # SU archivo: sin esto vuelve a correr la integración
+        working-directory: ./frontend
+
+      - name: Publicar el reporte e2e
+        uses: actions/upload-artifact@v6
+        if: ${{ !cancelled() }}
+        with:
+          name: playwright-report-e2e
+          path: frontend/playwright-report
+          retention-days: 14
+
+  # 🔴 El gate tiene que poder decir que no: en este tramo no hay
+  # continue-on-error, ni `|| true`, ni `if: always()`/`!cancelled()` fuera de
+  # los dos pasos que publican reporte. Si integracion o e2e dan rojo, este job
+  # ni siquiera pide aprobación.
   deploy-prod:
     runs-on: ubuntu-latest
-    needs: deploy-qa                         # PROD sólo después de QA vivo (y hereda su `if` de rama)
+    needs: e2e                               # ← EL gate (y hereda el `if` de rama de deploy-qa)
     environment: production                  # ⏸ acá la corrida SE PAUSA hasta el approve
     # Evita dos deploys a PROD pisándose. NO ordena la cola de aprobaciones:
     # una corrida vieja esperando review sobrevive, y aprobarla haría retroceder

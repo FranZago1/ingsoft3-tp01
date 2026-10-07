@@ -26,3 +26,8 @@ Thumbs.db
 
 # configuración local de Claude Code
 .claude/
+
+# reportes de Playwright (TP7): los genera cada corrida, no se versionan
+playwright-report/
+test-results/
+reporte-*/

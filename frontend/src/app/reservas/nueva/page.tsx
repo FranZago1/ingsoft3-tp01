@@ -105,7 +105,12 @@ export default function NuevaReservaPage() {
         </div>
 
         {horarioMsg && <p className="text-sm text-amber-600">{horarioMsg}</p>}
-        {error && <p className="text-sm text-red-600">{error}</p>}
+        {/* role="alert": un lector de pantalla lo anuncia, y la e2e lo encuentra */}
+        {error && (
+          <p role="alert" className="text-sm text-red-600">
+            {error}
+          </p>
+        )}
 
         <button
           type="submit"
