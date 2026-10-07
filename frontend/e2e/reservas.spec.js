@@ -26,6 +26,9 @@ async function pedirTurno(page, turno) {
   await page.getByRole("button", { name: "Reservar" }).click();
 }
 
+// La pantalla de detalle de UNA reserva: /reservas/<id>, que no es /reservas/nueva.
+const DETALLE = /\/reservas\/(?!nueva$)[^/]+$/;
+
 // La fila de la lista «Mis reservas» que corresponde a ESTE turno.
 const filaDe = (page, turno) =>
   page.getByRole("link", { name: `${turno.fecha} ${turno.horaInicio}–${turno.horaFin}` });
@@ -46,7 +49,7 @@ test("reservar un turno lo muestra en mis reservas, y borrarlo lo saca", async (
   await pedirTurno(page, turno);
 
   // El alta lleva al detalle de la reserva recién creada.
-  await expect(page).toHaveURL(/\/reservas\/[^/]+$/);
+  await expect(page).toHaveURL(DETALLE);
   await expect(page.getByText(`${turno.horaInicio}–${turno.horaFin}`)).toBeVisible();
 
   // Y en la lista está, con su turno.
@@ -93,7 +96,7 @@ test("un turno ocupado muestra el error y no crea una segunda reserva", async ({
 test("cancelar mi reserva la deja cancelada, sin opción de volver a cancelarla", async ({ page }) => {
   const turno = turnoUnico();
   await pedirTurno(page, turno);
-  await expect(page).toHaveURL(/\/reservas\/[^/]+$/);
+  await expect(page).toHaveURL(DETALLE);
 
   await page.getByRole("button", { name: "Cancelar" }).click();
   await expect(page.getByText("cancelada", { exact: true })).toBeVisible();
