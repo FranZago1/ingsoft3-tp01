@@ -34,12 +34,25 @@ export default function AccionesReserva({
     }
   }
 
-  if (disponibles.length === 0) {
-    return <p className="text-sm text-gray-500">No hay acciones disponibles.</p>;
+  // Borrar la saca de la base (cancelar la deja en el historial). Vuelve a la
+  // lista, que es donde se ve que ya no está.
+  async function borrar() {
+    setError("");
+    const res = await fetch(`/api/reservas/${id}`, { method: "DELETE" });
+    if (res.ok) {
+      router.push("/reservas");
+      router.refresh();
+    } else {
+      const data = await res.json().catch(() => ({}));
+      setError(data.error ?? "No se pudo borrar la reserva.");
+    }
   }
 
   return (
     <div className="space-y-2">
+      {disponibles.length === 0 && (
+        <p className="text-sm text-gray-500">No hay cambios de estado disponibles.</p>
+      )}
       <div className="flex gap-2">
         {disponibles.includes("confirmada") && (
           <button
@@ -57,8 +70,18 @@ export default function AccionesReserva({
             Cancelar
           </button>
         )}
+        <button
+          onClick={borrar}
+          className="ml-auto rounded border border-red-600 px-4 py-2 text-red-600"
+        >
+          Borrar reserva
+        </button>
       </div>
-      {error && <p className="text-sm text-red-600">{error}</p>}
+      {error && (
+        <p role="alert" className="text-sm text-red-600">
+          {error}
+        </p>
+      )}
     </div>
   );
 }

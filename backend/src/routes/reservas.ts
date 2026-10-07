@@ -171,3 +171,25 @@ reservasRouter.patch("/:id/estado", async (req, res, next) => {
     return next(e);
   }
 });
+
+// DELETE /api/reservas/:id → la borra de la base. Solo el dueño o un admin.
+// Cancelar NO es borrar: una cancelada queda en el historial. Esto existe para
+// que quien crea un dato de prueba (las suites de integración y e2e del TP7,
+// contra la base de QA) pueda dejar la base como la encontró.
+reservasRouter.delete("/:id", async (req, res, next) => {
+  try {
+    const usuario = usuarioDe(res);
+    const reserva = await prisma.reserva.findUnique({
+      where: { id: req.params.id },
+    });
+    if (!reserva) return noEncontrado(res);
+
+    // Regla 6.
+    if (!puedeAcceder(usuario, reserva)) return sinPermiso(res);
+
+    await prisma.reserva.delete({ where: { id: reserva.id } });
+    return res.status(204).end();
+  } catch (e) {
+    return next(e);
+  }
+});
