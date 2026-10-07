@@ -43,7 +43,7 @@ export default function NuevaReservaPage() {
     const res = await fetch("/api/reservas", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cancha: canchaId, fecha, horaInicio, horaFin }),
+      body: JSON.stringify({ canchaId, fecha, horaInicio, horaFin }),
     });
     if (res.ok) {
       const reserva = await res.json();
