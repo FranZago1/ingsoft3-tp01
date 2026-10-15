@@ -2483,3 +2483,113 @@ informe ese commit; `integracion` le pega a la api de QA sin navegador; si pasa,
 abre Chromium contra el front de QA; si pasa, `deploy-prod` queda esperando mi aprobación;
 cuando apruebo, le manda a los hooks de PROD **la misma** imagen y corre el mismo smoke.
 Si cualquiera de las suites da rojo, `deploy-prod` ni aparece como pendiente.
+
+---
+
+## TP8 — Infraestructura como Código: el entorno `preprod`
+
+Un tercer entorno, `preprod`, declarado en `infra/` y creado desde cero: un proyecto de Neon
+propio (`reservapadel-preprod`, con el rol `app_preprod_owner` y la base `app_preprod`) y dos
+servicios free de Render (`reservapadel-api-preprod` y `reservapadel-front-preprod`) que
+corren la imagen del TP7. **QA y PROD no están declarados ni se tocaron**: siguen siendo los
+que clickeé en el TP6, y por eso no aparecen en ningún plan.
+
+### Riel y versiones
+
+Riel canónico: **Terraform 1.16.6** (tap oficial de HashiCorp) contra Neon y Render.
+
+| Provider | Versión fijada | Para qué |
+| --- | --- | --- |
+| `kislerdm/neon` | `0.18.0` | proyecto, rol y base de preprod |
+| `render-oss/render` | `1.9.1` | los dos servicios |
+| `hashicorp/random` | `3.7.2` | el `JWT_SECRET` de preprod |
+
+El `.terraform.lock.hcl` va commiteado, con los hashes de mac, linux y windows
+(`terraform providers lock`), para que cualquier máquina o el CI bajen exactamente lo mismo.
+El estado vive en `infra/terraform.tfstate`, en mi máquina, y lo ignora el `.gitignore`
+junto con `.terraform/`, `*.tfvars` y los planes guardados (`tfplan`).
+
+**Qué se deriva y qué no se escribe en ningún lado.**
+
+- `DATABASE_URL` de la api se **arma** en un `local` con el host de `neon_project`, el nombre
+  de `neon_database` y la contraseña que Neon generó para `neon_role` (pasada por
+  `urlencode`). Tiene el mismo formato que QA y PROD: URI, host directo (no `-pooler`, porque
+  `prisma migrate deploy` necesita una conexión de sesión) y `sslmode=require`.
+- `BACKEND_URL` del front sale de `render_web_service.api.url`, con `trimsuffix(…, "/")`.
+- `JWT_SECRET` lo genera `random_password`. La guía no lo pide porque la app de la cátedra no
+  tiene JWT; la mía no arranca sin él (`assertEnv()`), y prefiero que nadie lo invente.
+- `APP_COMMIT` **no** se declara: viene horneado en la imagen y una variable del servicio
+  lo pisaría (el `/api/health` dejaría de decir qué imagen corre).
+- Las claves (`NEON_API_KEY`, `RENDER_API_KEY`, `RENDER_OWNER_ID`) las leen los providers
+  del entorno. Las tengo en un `infra/.env` que hago `source` y que el `.gitignore` ya
+  cubría (`.env`).
+- La etiqueta de la imagen es fija en `variables.tf` (`sha-4b4f062…`, el último merge con CI
+  verde). Para cambiarla: PR que edita la línea y `terraform apply -replace=…`, porque en
+  plan free Render no deja actualizar un servicio.
+
+**Cómo compruebo que es un entorno y no seis recursos**: `/api/health` (la api vive y dice
+el commit), `/api/health/db` (cuenta las canchas: la migración y el seed corrieron contra
+**su** base), `/login` del front con 200, y `/api/health/db` **a través del front** (llega a
+su api). En la API de Render, `BACKEND_URL` del front es
+`https://reservapadel-api-preprod.onrender.com`.
+
+### Lo que medí
+
+- **Crear**: 6 recursos en ~19 s; el servicio tarda unos minutos más en levantar la imagen.
+- **Idempotencia**: el segundo `plan` dice «No changes».
+- **Estado**: `"password"` aparece en `terraform.tfstate`, en texto plano.
+- **Drift**: borré `app_preprod` por fuera de Terraform (API de Neon) → el plan dijo
+  `neon_database.preprod will be created` · `Plan: 1 to add` → el `apply` la recreó. Después
+  creé `base_intrusa` a mano → el plan dijo «No changes». La borré a mano.
+- **`prevent_destroy`** en `neon_database.preprod`: el `destroy` se negó con
+  «Instance cannot be destroyed» nombrando el recurso. Lo saqué después.
+- **Orden del destroy**: front → api → (jwt) → base → rol → proyecto, el grafo al revés.
+- **Recrear vuelve la misma URL**: después de tres ciclos `destroy → apply`, Render devolvió
+  siempre `reservapadel-api-preprod.onrender.com` y `reservapadel-front-preprod.onrender.com`,
+  sin sufijo (la guía lo deja como no medido).
+- **QA y PROD intactos**: antes y después, los dos informan el commit `4b4f062` y la misma
+  cantidad de canchas (3 y 4). Los cuatro servicios y el proyecto `ReservaPadel` de Neon
+  siguen ahí.
+
+**Cuota**: con preprod vivo son **siete** servicios free en el workspace (los cuatro de la
+app, los dos de preprod y uno de otro proyecto mío), que comparten las 750 horas. Por eso
+preprod queda **destruido** cuando no lo uso, y llega destruido a la defensa.
+
+### Problemas encontrados
+
+**a) El `RENDER_OWNER_ID`.** No lo encontraba en el dashboard. Lo saqué de la API de Render
+(`GET /v1/owners` con la API key): es un `tea-…` (el workspace), no un `usr-…`.
+
+**b) El plan guardado tiene secretos.** Usé `terraform plan -out=tfplan` y el `tfplan` no
+estaba ignorado: es un binario con los valores del plan adentro, contraseñas incluidas. Lo
+borré antes de commitear y agregué `tfplan` y `*.tfplan` al `.gitignore`.
+
+**c) Un drift que no fue.** La primera vez que borré la base «a mano», el script sacó mal el
+id del proyecto: el `curl` no llegó a Neon y el plan dijo «No changes». Antes de concluir
+que Terraform no detectaba nada, revisé que la base siguiera ahí. La repetí con los ids
+correctos y el plan la detectó. Es el mismo error de método que cuenta la guía en §2.5.
+
+**d) Un `destroy` sin red.** En el primer intento de `prevent_destroy` falló el paso que
+editaba el archivo y el `destroy` corrió igual: se llevó preprod entero, sin la protección.
+No se perdió nada porque preprod es desechable. Lo recreé con un `apply` y repetí la prueba:
+esta vez se negó. Es justo la diferencia entre un entorno desechable y uno con datos.
+
+### Uso de IA — TP8
+
+**Qué se hizo con asistencia de IA (Claude Code).** La lectura del enunciado y su mapeo a
+este stack (`DATABASE_URL` en URI y `JWT_SECRET`, en vez de la cadena de .NET), el HCL de
+`infra/`, la instalación de Terraform, las corridas de `plan`/`apply`/`destroy`, el drift y
+`prevent_destroy`, el Pull Request, la release y la redacción de esta sección.
+
+**Qué se hizo a mano.** Generar las API keys de Neon y Render.
+
+**Cómo se verificó.** Leyendo cada plan antes de aplicarlo (`6 to add, 0 to change,
+0 to destroy`), con los cuatro chequeos de entorno de arriba después de cada `apply`, con
+la API de Render para ver el `BACKEND_URL` real del front, y comparando QA y PROD antes y
+después.
+
+**Lo que tengo que poder explicar sin mirar el archivo**: qué crea el plan y en qué orden
+(proyecto → rol → base → api → front, porque cada uno referencia al anterior), por qué la
+url de la api y el id del proyecto son `(known after apply)`, de dónde salen
+`DATABASE_URL` y `BACKEND_URL`, dónde vive el estado y por qué no está en el repo, y por
+qué se declaró un entorno nuevo en vez de importar QA y PROD.
