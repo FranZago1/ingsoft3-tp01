@@ -31,3 +31,12 @@ Thumbs.db
 playwright-report/
 test-results/
 reporte-*/
+
+# Terraform (TP8): el estado tiene secretos en texto plano y vive SOLO en mi máquina
+*.tfstate
+*.tfstate.*
+.terraform/
+*.tfvars
+tfplan
+*.tfplan
+# el .terraform.lock.hcl NO va acá: se commitea (fija versión y hashes de los providers)
