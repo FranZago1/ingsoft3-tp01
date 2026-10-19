@@ -20,12 +20,6 @@ export function createApp() {
   app.use("/api/reservas", reservasRouter);
   app.use("/api/canchas", canchasRouter);
 
-  // TP9 §3.5: endpoint de prueba para ver un error llegar a Sentry.
-  // TEMPORAL: se saca antes de cerrar el práctico.
-  app.get("/api/falla", () => {
-    throw new Error("Falla de prueba del TP9");
-  });
-
   // 404 con la misma forma { error } que el resto.
   app.use((_req, res) => {
     res.status(404).json({ error: "No existe." });
