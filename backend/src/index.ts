@@ -1,3 +1,5 @@
+// Primero, antes que Express: ver instrument.ts.
+import "./instrument";
 import { createApp } from "./app";
 import { assertEnv, getPort } from "./env";
 
