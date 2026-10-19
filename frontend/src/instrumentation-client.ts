@@ -9,7 +9,7 @@ import * as Sentry from "@sentry/react";
 // para MANDAR datos a este proyecto, no para leerlos, y de todos modos viaja
 // en el JavaScript que baja cualquier navegador.
 Sentry.init({
-  dsn: "__SENTRY_DSN_FRONT__",
+  dsn: "https://52e4f0f0495e18688cf6e56af290c90a@o4512284830728192.ingest.us.sentry.io/4512284876800001",
   // La imagen es la misma en QA y PROD: el sitio dice de qué entorno vino.
   environment: window.location.hostname,
   // En la máquina de desarrollo no se manda nada.
