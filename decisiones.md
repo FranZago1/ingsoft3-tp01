@@ -2593,3 +2593,157 @@ después.
 url de la api y el id del proyecto son `(known after apply)`, de dónde salen
 `DATABASE_URL` y `BACKEND_URL`, dónde vive el estado y por qué no está en el repo, y por
 qué se declaró un entorno nuevo en vez de importar QA y PROD.
+
+## TP9 — DevSecOps + Observabilidad + Continuous Feedback
+
+Las tres protecciones de GitHub están activas en *Settings → Advanced Security*: Dependabot
+(alertas + actualizaciones de seguridad, con `.github/dependabot.yml` para npm en `/backend`, npm
+en `/frontend` y github-actions en `/`), CodeQL en configuración por defecto, y secret scanning
+con push protection (ya venía prendido por ser un repo público). El monitor es UptimeRobot sobre
+`https://reservapadel-api-prod.onrender.com/api/health`. Sentry está en el back (`@sentry/node`) y
+en el front (`@sentry/react`), y la tarjeta que salió de sus datos es la #64.
+
+### El PR de Dependabot que mergeé: #63
+
+`next` **15.5.23 → 15.5.27**, en `/frontend`. Me animé a mergearlo por tres razones:
+
+- **Es un patch** (SemVer del TP6): no cambia ni el major ni el minor. El changelog no menciona
+  breaking changes.
+- **Es de seguridad**: la 15.5.27 corrige tres vulnerabilidades medias del App Router (cache
+  poisoning de páginas SSG/ISR y una fuga de información en las rutas de imágenes de metadata). En
+  el camino trae la 15.5.24, que corrigió dos ejecuciones remotas de código críticas.
+- **Su CI dio verde**: build, tests y coverage del front sobre la versión nueva. Después del merge,
+  la cadena completa (QA, integración, e2e en navegador) volvió a pasar antes de PROD.
+
+Los que **no** mergeé dicen lo mismo desde el otro lado. Dependabot abrió 26 PRs en minutos y 8
+dieron rojo en el CI: TypeScript 7, Vitest 5, Tailwind 4, ESLint 10, React. Todos son saltos de
+major. El CI rojo es mi pipeline diciendo «esto rompe», y no los toco hasta tener tiempo de migrar.
+
+### Lo que midió el monitor, y lo que midió Sentry
+
+**La caída provocada** (hora local, UTC-3):
+
+| Hora | Qué pasó |
+|---|---|
+| 18:02 | *Suspend* del api de PROD en Render |
+| 18:08 | Mail **DOWN** de UptimeRobot → **6 minutos** de detección |
+| 18:08 | *Resume* en Render |
+| 18:13 | Mail **UP** → 5 minutos desde que lo levanté |
+
+Con un chequeo cada 5 minutos, el peor caso de detección es de unos 10 (5 hasta el chequeo, más la
+confirmación). Sin monitor, me habría enterado cuando alguien intentara reservar y me avisara: el
+escenario del TP habla de 40 minutos un sábado. El monitor quedó **pausado**, porque despierto
+todo el mes se come casi todas las 750 horas gratis de Render.
+
+**El uso real de PROD** (19/10, unos minutos de uso + `/api/falla`):
+
+- **Más usada y más lenta**: `GET /api/reservas`. Fueron 5 pedidos de **20 ms a 141 ms**, la
+  misma consulta con 7 veces de diferencia. Es la ruta de *Mis reservas* y del panel de admin.
+  `POST /api/reservas` tardó 26 ms.
+- **El error**: `Error: Falla de prueba del TP9` en Issues, con la ruta (`GET /api/falla`), el
+  archivo y la línea, y el **release** = el commit de la imagen (`e7c27a4`). Lo pongo en
+  `instrument.ts` con `APP_COMMIT`, así un error dice qué versión lo produjo.
+- **El front**: las cargas de página llegaron hasta ~2,7 s. Es el primer pedido después de que el
+  servicio free se durmió, la misma clase de dato que la guía midió en la app de la cátedra.
+
+De ahí salió la tarjeta **#64**: investigar la traza de 141 ms de `GET /api/reservas` (¿base o
+Express?) y, según lo que muestre, un índice en `Reserva(usuarioId, inicio)`.
+
+**Qué ve cada uno y qué no.** El monitor ve que la api contesta. No ve que una ruta tire 500 ni
+que tarde, y tampoco ve el front: mira `/api/health`. Sentry ve errores, demoras y uso desde
+adentro. Pero si el proceso está muerto, no manda nada: no se entera de una caída. Por eso van
+juntos.
+
+### Decisiones de Sentry
+
+- **El DSN del back va por el entorno** (`SENTRY_DSN`), y **sólo** en el servicio de PROD. Sin la
+  variable, `Sentry.init` queda apagado: los tests, mi máquina y QA no mandan nada. Así las
+  corridas de e2e contra QA no ensucian el «uso real».
+- **El DSN del front va escrito en el código** (`src/instrumentation-client.ts`). No es un
+  secreto: sólo sirve para mandar datos a ese proyecto, no para leerlos, y de todos modos viaja en
+  el JavaScript que baja cualquier navegador. La imagen del front es la misma en QA y PROD, así que
+  el `environment` es el hostname, y en localhost está apagado.
+- **`instrument.ts` es el primer import de `index.ts`**. Sentry mide las rutas envolviendo Express
+  cuando se carga: si Express ya estaba cargado, los errores llegan igual pero las demoras por
+  ruta no.
+- **`setupExpressErrorHandler` va entre las rutas y mi handler de errores**: Sentry ve la
+  excepción y mi handler sigue respondiendo el JSON de siempre.
+- **`/api/falla` vivió un solo PR** (#36) y se fue en el de cierre.
+
+### CodeQL: lo que encontró y qué hice
+
+El primer análisis dio **6 hallazgos**:
+
+- **4 × `actions/missing-workflow-permissions`** (`deploy-qa`, `integracion`, `e2e`,
+  `deploy-prod`). Esos jobs no declaraban `permissions:` y corrían con el default del repo.
+  - OWASP: A01 *Broken Access Control*, por mínimo privilegio. No es explotable hoy, porque el
+    default de mi repo es de sólo lectura, pero depende de un setting que cualquiera puede cambiar.
+  - **Arreglado**: `contents: read` en los cuatro. Ninguno escribe nada con el token de GitHub:
+    los deploys son `curl` a los hooks de Render.
+- **`js/polynomial-redos`** en la regex de email (`services/auth.ts`). **Es explotable.**
+  - Con un «email» `a@` seguido de miles de puntos, la regex tarda el cuadrado del largo. Medí
+    215 ms con 20.000 caracteres. Con los 100 KB que acepta `express.json` son ~5 s de event loop
+    bloqueado por pedido, contra `/login` y sin estar logueado: un DoS con un solo cliente.
+  - OWASP: A06/A04, diseño inseguro de una validación.
+  - **Arreglado**: tope de 254 caracteres (RFC 5321) **antes** de la regex, y un test que manda el
+    ataque y exige que conteste en menos de 50 ms.
+- **`js/missing-rate-limiting`** en `POST /api/auth/login`. Es real: nada frena probar passwords
+  sin parar.
+  - OWASP: A07 *Identification and Authentication Failures*.
+  - **No lo arreglé en este TP**: la mitigación (un rate limit por IP) tiene un detalle con el
+    `trust proxy` de Render que quiero probar aparte. Queda abierto en *Code scanning*, a propósito.
+
+### Problemas encontrados
+
+**a) Un deploy a PROD trabado 35 minutos por una aprobación de hace 4 días.** La corrida de Sentry
+pasó QA, integración y e2e a las 18:05, y `deploy-prod` no arrancó. GitHub decía «waiting for
+deploy-prod (CI #47) to complete». CI #47 era la corrida del merge del TP8, del 15/10. Seguía
+esperando review y tenía tomado el grupo de `concurrency: deploy-prod`. La rechacé y la nueva
+arrancó al instante. Es el riesgo que había anotado en el TP6 («una corrida vieja esperando review
+sobrevive»), ahora con el costo medido. Está escrito como postmortem en `postmortem.md`.
+
+**b) La aprobación que no fue.** Creí haber aprobado el deploy, pero la API de GitHub mostraba la
+corrida **sin ninguna aprobación**: el botón que importaba era el de CI #47 (rechazar), no el de
+la nueva.
+
+**c) «No aparece nada en Sentry».** Era (a): PROD seguía en el commit viejo, sin Sentry, y
+`/api/falla` daba 404. La pantalla de Sentry de «instalá el SDK» confunde, porque el SDK ya estaba
+en el código. Lo que faltaba era que la imagen nueva llegara a PROD.
+
+**d) Activar Advanced Security fue a mano.** Prender Dependabot alerts, security updates y CodeQL
+desde la API con `gh` quedó bloqueado por los permisos del asistente. Lo hice desde *Settings*.
+
+### Uso de IA — TP9
+
+**Qué se hizo con asistencia de IA (Claude Code).**
+- El `dependabot.yml` y el código de Sentry en back y front: `instrument.ts`,
+  `instrumentation-client.ts` y el handler de errores.
+- El endpoint `/api/falla` y su retiro.
+- El análisis de los 6 hallazgos de CodeQL, el arreglo de los `permissions:` y del ReDoS (con su
+  test), y la medición del ReDoS.
+- El diagnóstico del deploy trabado, leyendo las corridas y las aprobaciones con la API de GitHub.
+- La elección del PR de Dependabot, la tarjeta #64, el `postmortem.md` y la redacción de esta
+  sección.
+
+**Qué se hizo a mano.**
+- Crear la cuenta y los proyectos de Sentry, y cargar `SENTRY_DSN` en Render.
+- Prender las protecciones en *Settings*.
+- La cuenta y el monitor de UptimeRobot, el *Suspend*/*Resume* y pausarlo.
+- Los merges, rechazar CI #47 y aprobar el deploy.
+- Usar la app de PROD y provocar el error.
+
+**Cómo se verificó.**
+- Antes del PR, el back levantado en local con un DSN de prueba: `/api/falla` → 500 con Express
+  instrumentado, y `HEAD /api/health` → 200.
+- Los 76→78 tests del back y los 66 del front, `tsc`, ESLint y `next build`, comprobando que el
+  init de Sentry quedara en el bundle.
+- En PROD, el error en Issues con el release `e7c27a4` y las rutas en *Backend Overview*.
+- Las horas DOWN/UP, en los mails del monitor.
+
+**Lo que tengo que poder explicar sin mirar el archivo**:
+- qué mira y qué **no** mira cada pieza: Dependabot, CodeQL, push protection, el monitor y Sentry;
+- por qué `instrument.ts` va primero;
+- por qué el DSN del front puede estar en un repo público y el del back no va en el código;
+- por qué el #63 era seguro y los majors no;
+- por qué el ReDoS es explotable;
+- qué tiene que ver `concurrency` con el deploy trabado.

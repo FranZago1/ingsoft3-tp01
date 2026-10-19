@@ -96,4 +96,16 @@ describe("emailValido", () => {
       expect(emailValido(email)).toBe(true);
     }
   );
+
+  it("rechaza un email de más de 254 caracteres", () => {
+    expect(emailValido("a".repeat(250) + "@c.com")).toBe(false);
+  });
+
+  // TP9: el caso que encontró CodeQL. Sin el tope, esto tarda segundos.
+  it("rechaza al instante un email enorme hecho para trabar la regex", () => {
+    const ataque = "a@" + ".".repeat(100_000) + " ";
+    const t = performance.now();
+    expect(emailValido(ataque)).toBe(false);
+    expect(performance.now() - t).toBeLessThan(50);
+  });
 });

@@ -179,6 +179,11 @@ jobs:
   # ---- TP6: la promoción. CI verde → QA automático → aprobación → PROD ----
   deploy-qa:
     runs-on: ubuntu-latest
+    # TP9 (CodeQL, actions/missing-workflow-permissions): sin esto el job corre
+    # con los permisos por defecto del repo. Sólo hace curl a los hooks de
+    # Render con sus secrets: del token de GitHub no necesita nada más que leer.
+    permissions:
+      contents: read
     needs: [build-backend, build-frontend]   # sin CI verde no hay deploy
     if: github.ref == 'refs/heads/main'      # los PRs verifican; sólo main despliega
     environment: qa                          # sus secrets (los hooks) y su historial; sin reviewers, a propósito
@@ -236,6 +241,8 @@ jobs:
   # jobs no tienen environment, así que no ven las vars de `qa`.
   integracion:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read                         # TP9: sólo baja el código (el porqué, en deploy-qa)
     needs: deploy-qa                         # QA ya ejecuta la imagen de ESTA corrida
     timeout-minutes: 15
     steps:
@@ -270,6 +277,8 @@ jobs:
 
   e2e:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read                         # TP9: sólo baja el código (el porqué, en deploy-qa)
     needs: integracion                       # api rota → no se gasta un navegador en confirmarlo
     timeout-minutes: 20                      # si algo se cuelga, el job muere en vez de esperar horas
     steps:
@@ -309,6 +318,8 @@ jobs:
   # ni siquiera pide aprobación.
   deploy-prod:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read                         # TP9: sólo curl a los hooks (el porqué, en deploy-qa)
     needs: e2e                               # ← EL gate (y hereda el `if` de rama de deploy-qa)
     environment: production                  # ⏸ acá la corrida SE PAUSA hasta el approve
     # Evita dos deploys a PROD pisándose. NO ordena la cola de aprobaciones:
