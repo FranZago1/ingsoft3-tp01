@@ -1,0 +1,19 @@
+# TP9: Dependabot lee este archivo desde main (en una rama no hace nada).
+# Tres ecosistemas, uno por cada lugar donde hay código ajeno que ejecutamos.
+# No es recursivo: `directory` tiene que ser la carpeta del package.json.
+version: 2
+updates:
+  - package-ecosystem: "npm"              # las dependencias del backend (Express, Prisma…)
+    directory: "/backend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "npm"              # las del frontend (Next, React…)
+    directory: "/frontend"
+    schedule:
+      interval: "weekly"
+
+  - package-ecosystem: "github-actions"   # las actions del pipeline también son dependencias
+    directory: "/"
+    schedule:
+      interval: "weekly"
