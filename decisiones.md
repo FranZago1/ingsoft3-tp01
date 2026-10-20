@@ -1177,607 +1177,266 @@ reutilizan y por qué, que es una propiedad del Dockerfile del TP2 y no del pipe
 
 ## TP5 — Calidad automatizada: tests, coverage y el umbral que frena un merge
 
-El TP4 dejó un pipeline que construye las dos imágenes en cada Pull Request y las exige
-como *required checks* de `main`. Lo que no hacía era ejecutar una sola línea de
-comportamiento: que compile no dice que ande. Esta sección cuenta cómo se agregó esa
-capa y, sobre todo, **por qué un número que elegí yo ahora puede frenar un merge**.
+El TP4 construía las imágenes pero no ejecutaba comportamiento: que compile no dice que ande.
+Este TP agrega la suite, la cobertura visible en cada corrida y **un umbral elegido por mí que
+frena un merge**.
 
 ### Qué lógica elegí testear, y por qué ésa
 
-La pregunta que ordena la suite es **dónde duele un bug en esta app**. Y la respuesta no
-es "en el login": es **una cancha reservada dos veces en el mismo horario**. Ese error no
-tira una excepción, no rompe ninguna pantalla y nadie lo ve hasta que dos parejas se
-presentan a la misma hora. Es un bug que el sistema no puede detectar solo, porque el
-estado resultante es perfectamente válido para la base de datos.
+Donde duele un bug en esta app es **una cancha reservada dos veces en el mismo horario**: no
+tira error, no rompe ninguna pantalla y nadie lo ve hasta que dos parejas llegan a la misma
+hora. Por eso la suite ataca primero `backend/src/services/reservas.ts`:
 
-Por eso la suite ataca primero `backend/src/services/reservas.ts`, y adentro:
+| Regla | Qué protege |
+| --- | --- |
+| 1 · solapamiento | Dos reservas no pisadas en la misma cancha (el bug caro) |
+| 2 · horario | 08:00–23:00, entre 60 y 120 minutos (todo bordes: `<` contra `<=`) |
+| 3 · no pasado | No se reserva hacia atrás (depende del reloj: hay que inyectarlo) |
+| 4 · transiciones | `pendiente→confirmada→cancelada` |
+| 5 · ventana de 2 h | Una confirmada no se cancela sobre la hora |
+| 6 · autorización | Cada uno ve lo suyo; el admin, todo |
+| 7 · registro | Email válido, contraseña de 8+ |
 
-| Regla | Qué protege | Por qué importa |
-| --- | --- | --- |
-| 1 · solapamiento | Dos reservas no pisadas en la misma cancha | El bug caro, el que se descubre en la cancha |
-| 2 · horario | 08:00–23:00, entre 60 y 120 minutos | Todos sus límites son **bordes**: `<` contra `<=` |
-| 3 · no pasado | No se reserva hacia atrás | Depende del reloj: sin inyectarlo no se puede testear |
-| 4 · transiciones | `pendiente→confirmada→cancelada` | Una máquina de estados: lo que NO se puede hacer importa más |
-| 5 · ventana de 2 h | Una confirmada no se cancela sobre la hora | Regla de negocio pura, invisible en el código de la UI |
-| 6 · autorización | Cada uno ve lo suyo; el admin, todo | Un error acá es una fuga de datos |
-| 7 · registro | Email válido, contraseña de 8+ | La única que el usuario ve fallar todos los días |
+**Criterio para saber si un test vale**: si invierto la regla, algo se pone en rojo. Por eso
+los casos están **sobre el borde**: 60 minutos se acepta y 59 no; cancelar a 2 h justas se puede
+y a 1 h 59 no; 10–11 y 11–12 **no** se solapan. Un test con 90 minutos pasa igual si alguien
+mueve el límite.
 
-**El criterio que usé para saber si un test vale**: si invierto la regla que prueba, algo
-se tiene que poner en rojo. Por eso casi todos los casos están escritos **sobre el
-borde** y no en el medio: una reserva de 60 minutos exactos se acepta, una de 59 no;
-cancelar exactamente 2 horas antes se puede, 1 h 59 no; dos reservas contiguas (10–11 y
-11–12) **no** se solapan. Un test con una reserva de 90 minutos no protege nada — pasa
-igual si alguien mueve el límite a 45 o a 200.
+**Afuera de la suite, a propósito**: los componentes de React y las pantallas. Verificar UI es
+de punta a punta contra la app desplegada (TP7).
 
-Lo que quedó **afuera** de la suite, a propósito: los componentes de React y las
-pantallas. Testear la UI unitariamente requiere jsdom y Testing Library, y verifica que
-un botón se pinte, no que una regla se cumpla. Esa verificación se hace de punta a punta
-contra la app desplegada, y es el TP7.
-
-### Números de la suite
-
-| | Métodos de test | Casos ejecutados | Reglas cubiertas |
+| | Métodos de test | Casos ejecutados | Reglas |
 | --- | --- | --- | --- |
 | Backend | 48 | 76 | 7 |
 | Frontend | 39 | 57 | 5 (las que espeja del backend) |
 
-📌 **Métodos y casos no son lo mismo, y el mínimo se cuenta en métodos.** Un `it.each`
-con siete filas es **un** test, no siete: por eso la primera columna es la que importa.
-Los 87 métodos se reparten sobre reglas distintas, no sobre siete datos de la misma.
+El mínimo se cuenta en métodos: un `it.each` con siete filas es **un** test.
 
 ### Mi stack no es el de la cátedra: qué herramienta cubre cada cosa
 
-La guía está escrita sobre .NET + vitest. Esta app es Node/TypeScript de los dos lados
-(Express + Prisma en el backend, Next.js en el frontend), así que cada fila de la tabla
-«Tu stack, de un vistazo» se resolvió así:
+Es Node/TypeScript de los dos lados (Express + Prisma, Next.js), y uso **vitest en los dos**:
+un solo runner, un solo `it.each` y un solo `vi.fn()` para entender y explicar.
 
 | Lo que hay que lograr | Con qué lo hice |
 | --- | --- |
-| Dónde viven los tests | Al lado del código: `reservas.ts` → `reservas.test.ts` |
-| Un test parametrizado | `it.each` de vitest (el equivalente del `[Theory]`/`[InlineData]`) |
+| Test parametrizado | `it.each` (el equivalente de `[Theory]`) |
 | Que la dependencia entre desde afuera | Un parámetro de la función, tipado con un `type` propio |
-| Fabricar el doble | `vi.fn()`, que viene con vitest: no hay que instalar un Moq |
-| Medir la cobertura | `@vitest/coverage-v8` (provider V8) |
-| **Un umbral que ROMPE el build** | `coverage.thresholds` del `vitest.config.ts` |
-| **Qué ENTRA en la cuenta** | `coverage.include` / `coverage.exclude` del mismo archivo |
-| Reporte legible | Reporters `html` (navegable) + `json-summary` (el que lee el pipeline) |
-| Que las herramientas entren al contenedor | Una etapa `FROM build AS test`: la etapa `build` ya instala con `npm ci` **sin** `--omit=dev` |
+| El doble | `vi.fn()` |
+| Medir la cobertura | `@vitest/coverage-v8` |
+| **Umbral que rompe el build** | `coverage.thresholds` en `vitest.config.ts` |
+| **Qué entra en la cuenta** | `coverage.include` / `coverage.exclude` |
+| Reporte | `html` (navegable) + `json-summary` (lo lee el pipeline) |
 
-**Una sola herramienta para los dos lados** fue una decisión, no una casualidad: vitest
-corre TypeScript sin configuración previa, y tener el mismo runner, el mismo `it.each` y
-el mismo `vi.fn()` en el back y en el front significa una sola cosa que entender y una
-sola que explicar.
+### El refactor para poder mockear
 
-### Los tres refactors: lo que hubo que abrir para poder testear
+**Si algo es difícil de testear, el problema suele ser el diseño.**
 
-Ésta es la parte que más código de producción tocó, y la lección es la de la clase: **si
-algo es difícil de testear, el problema suele ser el diseño, no el test.**
+- **Backend — `services/crear-reserva.ts` (nuevo).** El handler de `POST /api/reservas`
+  mezclaba parsear, aplicar reglas y hablar con Prisma, que entraba por un `import` estático:
+  **era imposible probarlo sin una base**. Ahora el servicio recibe su repositorio por parámetro:
 
-**1 · `backend/src/services/crear-reserva.ts` (nuevo) — el que hace posible el mock.**
-Antes, el handler de `POST /api/reservas` tenía 56 líneas que mezclaban tres cosas:
-parsear el pedido, aplicar reglas y hablar con Prisma. Prisma entraba por un `import`
-estático, así que **no había forma de probar esa lógica sin una base levantada** — no era
-difícil, era imposible. Ahora la lógica vive en un servicio que **recibe su repositorio
-por parámetro**:
+  ```ts
+  export async function crearReserva<T>(pedido, usuarioId, repo: RepositorioReservas<T>, ahora: Date)
+  ```
 
-```ts
-export type RepositorioReservas<T> = {
-  buscarCancha(id: string): Promise<{ id: string } | null>;
-  reservasDelDia(canchaId: string, desde: Date, hasta: Date): Promise<ReservaDominio[]>;
-  guardar(datos: DatosNuevaReserva): Promise<T>;
-};
+  La app le pasa un repositorio con Prisma (`routes/reservas.ts`); el test le pasa tres
+  `vi.fn()`. Ninguna regla cambió: sólo **de dónde viene la base**.
+- **Frontend — `lib/http.ts` (nuevo).** `apiGet` llamaba a `cookies()` y a `fetch` adentro. Se
+  separó cómo se lee la respuesta (200, error con cuerpo, backend caído) de quién la trae:
+  `pedirJson(url, cookieHeader, traer = fetch)`. El test le pasa un `fetch` falso.
+- **Frontend — `lib/token.ts` (nuevo).** `sesionDeToken(token, ahora)`: el parseo del JWT como
+  función pura, con el reloj inyectado.
 
-export async function crearReserva<T>(pedido, usuarioId, repo: RepositorioReservas<T>, ahora: Date)
-```
-
-Quien lo construye decide qué le pasa: la aplicación real le pasa un repositorio armado
-con Prisma (vive en `routes/reservas.ts`, que es donde corresponde), y el test le pasa
-tres `vi.fn()`. El handler quedó en 14 líneas que solo eligen el código HTTP.
-
-🔴 **Lo que cambió y lo que NO.** Ninguna regla se movió de lugar ni se relajó: las
-validaciones siguen siendo las mismas funciones puras de antes, llamadas en el mismo
-orden. Lo único que cambió es **de dónde viene la base**. Si el refactor hubiera perdido
-una validación, el test con mock quedaría verde sobre un servicio que dejó de validar, y
-eso es peor que no tener el test.
-
-También se movieron a los servicios dos cosas que eran **reglas viviendo en la ruta**:
-`rangoDelDia()` y la lista de estados aceptados (`esEstadoAceptado()`). Esto no es
-cosmética: en la sección de exclusiones se saca `src/routes/**` de la cuenta de
-cobertura, y sacar de la medición un archivo que todavía tiene reglas adentro es
-exactamente la trampa que infla el porcentaje. **Primero se sacan las reglas, después se
-excluye el archivo.**
-
-**2 · `frontend/src/lib/http.ts` (nuevo) — el mock del frontend.**
-`apiGet` empezaba con `await cookies()` de `next/headers` y llamaba a `fetch` adentro:
-el mismo problema con otra cara. Se separó **cómo se lee una respuesta** (los tres
-caminos: 200, error con cuerpo, y el backend que no contesta) de **quién la trae**:
-
-```ts
-export async function pedirJson<T>(url: string, cookieHeader: string, traer: Traer = fetch)
-```
-
-`api.ts` quedó en dos líneas: lee la cookie, arma la URL absoluta y delega.
-
-**3 · `frontend/src/lib/token.ts` (nuevo).** `getSesion()` tenía comportamiento real
-—parsear el payload del JWT, mirar el vencimiento, normalizar el rol— pegado a una línea
-de `cookies()`. Se separó en una función pura `sesionDeToken(token, ahora)` con el reloj
-inyectado, igual que en el backend. `sesion.ts` quedó como pegamento de tres líneas.
-
-📌 **Y un paso que los tests no reclaman.** En los tres casos, después de abrir el código
-hay que acordarse de **cablear la dependencia real**: si me olvido, la suite queda verde
-—el test le pasa el doble a mano— y la aplicación queda rota. Por eso la verificación no
-fue "los tests pasan", fue levantar la app con `docker compose up` y pegarle un `curl` al
-endpoint que usa cada pieza.
+Después de cada refactor verifiqué con la app levantada que la dependencia **real** quedó
+cableada: los tests pasan igual si me olvido, porque le pasan el doble a mano.
 
 ### El umbral: 90 % de líneas y 90 % de ramas, en los dos lados
 
-**El número, anclado en la medición real.** Con la suite completa y en verde, hoy mido:
+| | Líneas | Ramas |
+| --- | --- | --- |
+| Backend | **100 %** (213/213) | **98,83 %** (85/86) |
+| Frontend | **100 %** (144/144) | **98,48 %** (65/66) |
 
-| | Líneas | Ramas | Funciones | Base medida |
-| --- | --- | --- | --- | --- |
-| Backend | **100 %** (213/213) | **98,83 %** (85/86) | 100 % (18/18) | 213 líneas |
-| Frontend | **100 %** (144/144) | **98,48 %** (65/66) | 100 % (13/13) | 144 líneas |
+**Por qué 90**: mido 100 y quiero que me frene cuando **entra una función sin tests**, no cuando
+agrego un `if` defensivo. Con 90 sobre 144 líneas del front hacen falta ~17 líneas sin cubrir
+para el rojo. Un 95 me frenaría con 8 y me empujaría a escribir tests de relleno. El número salió
+**de la medición**: primero escribí la suite, medí, y recién ahí elegí (un 80 copiado del ejemplo
+habría dejado entrar 28 líneas sin tests).
 
-Puse **90** porque mido 100 y 98,8 y quiero que el umbral me frene cuando **me olvide de
-testear algo**, no cuando agregue un `if` defensivo. Con 90 sobre una base de 144 líneas
-en el frontend, hacen falta unas **17 líneas sin cubrir** para que el build se ponga
-rojo: eso es "entró una función sin tests", que es justo lo que quiero que frene. Un 95
-me frenaría con 8 líneas y me empujaría a escribir tests de relleno para volver al verde,
-que es la peor consecuencia posible de un gate.
+**Por qué las dos métricas**: líneas sola es la más generosa (ejecutar una línea no recorre sus
+dos caminos). Y ramas sola tampoco alcanza: en el PR #22 (abajo) una función entera sin tests
+casi no movió las ramas, porque en vitest 3 una función que nadie llama no suma ramas. **Con el
+umbral sólo en ramas, ese PR habría pasado.**
 
-**Sobre qué métrica: las dos, línea y rama.** El umbral de líneas solo es el más generoso
-de todos —es la métrica que este práctico llama la menos honesta—, porque ejecutar una
-línea no dice que se hayan recorrido sus dos caminos. Declarar las dos significa que
-frena la que quede corta. **El número de rama, que se pide aunque no fuera el umbral, es
-98,83 % en el backend y 98,48 % en el frontend.**
+**100 % de ramas es inalcanzable acá**: la rama que falta de cada lado no la recorre ninguna
+entrada (ver «camino sin cubrir»). **Para subirlo a 95** no faltan tests: falta **ampliar lo que
+se mide** (el candidato es `leerCookie()` de `src/auth.ts`).
 
-🔴 **Y hay un detalle que conviene decir antes de que lo pregunten: 100 % de ramas es
-inalcanzable acá, y a propósito.** La única rama sin cubrir de cada lado es una que
-**ninguna entrada puede recorrer** (está explicado abajo, en el ejercicio del camino sin
-cubrir). O sea que el techo real de esta suite es ~98,8 y ~98,5, no 100. Un umbral de 100
-en ramas pondría el build en rojo para siempre por dos `if` que son guardas de tipos.
+### Qué dejé afuera de la cuenta, y por qué
 
-**Qué haría falta para subirlo a 95.** Nada del lado de los tests: ya estoy arriba. Lo
-que haría falta es **ampliar lo que se mide**, y ahí el candidato honesto es
-`src/auth.ts` (ver abajo). Subir el umbral sin ampliar la medición no exigiría más
-calidad, solo dejaría menos margen.
+En el backend se **incluye todo `src`** y se excluye a mano: así un archivo nuevo entra solo a
+la cuenta y no nace invisible para el umbral.
 
-### Qué dejé afuera de la cuenta, y por qué cada cosa
-
-El criterio es el de la teoría: el umbral se aplica **sobre lo que tiene sentido
-testear**. Y la forma de escribirlo importa: en el backend se **incluye todo `src`** y se
-excluye a mano, en vez de listar lo que sí entra. Con `include` de una carpeta, un
-archivo nuevo que me olvide de nombrar **nace invisible para el umbral**, y un control
-que falla hacia el número alto no es un control.
-
-**Backend** (`backend/vitest.config.ts`):
-
-| Fuera de la cuenta | Por qué |
+| Backend, fuera de la cuenta | Por qué |
 | --- | --- |
-| `src/index.ts` | El arranque. No hay reglas ahí, y si está mal la app no levanta: me entero sin un test |
-| `src/app.ts` | Cableado de Express: monta routers, no decide nada |
-| `src/prisma.ts` | Infraestructura: instancia el cliente |
-| `src/env.ts` | Configuración |
-| `src/http.ts` | Mapeo de `Resultado` a código HTTP: una tabla, sin comportamiento |
-| `src/routes/**` | Pegamento, **después del refactor**: parsean, delegan y responden |
-| `src/auth.ts` | bcrypt, JWT y tipos de Express: librerías de terceros, no reglas mías |
-| `src/services/tipos.ts` | Tipos, sin comportamiento |
+| `src/index.ts`, `src/app.ts` | Arranque y cableado de Express: no deciden nada |
+| `src/prisma.ts`, `src/env.ts`, `src/services/tipos.ts` | Infraestructura, configuración y tipos |
+| `src/http.ts` | Tabla de `Resultado` → código HTTP, sin comportamiento |
+| `src/routes/**` | Pegamento **después del refactor** |
+| `src/auth.ts` | bcrypt y JWT: es la librería, no reglas mías |
 
-🔴 **El caso discutible, y prefiero decirlo yo: `src/auth.ts`.** Está afuera porque es la
-frontera con bcrypt y con `jsonwebtoken`, y testear eso es testear la librería. Pero
-adentro hay una función que **sí** es comportamiento mío: `leerCookie()`, un parseo a
-mano del header `Cookie`. Sacarla a una función pura y meterla en la cuenta es
-exactamente lo que haría falta para subir el umbral con sentido, y es lo que haría si
-siguiera trabajando en esto.
+`src/auth.ts` es el caso discutible: adentro está `leerCookie()`, que sí es comportamiento mío.
 
-**Frontend** (`frontend/vitest.config.ts`): se incluye `src/lib/**` —la carpeta donde
-vive la lógica— y quedan afuera `tipos.ts` (tipos sin comportamiento), y `api.ts` y
-`sesion.ts`, que **después del refactor** son tres líneas de pegamento con `next/headers`
-cada uno: su comportamiento se mudó a `http.ts` y `token.ts`, que sí se miden.
+Antes de excluir `src/routes/**` saqué de ahí lo que eran **reglas** (`rangoDelDia()`, la lista
+de estados aceptados) a los servicios. **Primero se sacan las reglas, después se excluye el
+archivo**; al revés, el porcentaje sube sin que nada esté más probado.
 
-Las páginas y los componentes quedan afuera de `include` porque son UI. Eso **no** es
-esconder lo que no testeé: es que la verificación correcta para una pantalla es de punta
-a punta con todo levantado, y ésa es la del TP7.
+**Frontend**: entra `src/lib/**`; quedan afuera `tipos.ts` y `api.ts`/`sesion.ts`, que después
+del refactor son tres líneas de pegamento con `next/headers`. Páginas y componentes son UI (TP7).
 
 ### Por qué una cobertura alta no garantiza calidad
 
-La cobertura mide **ejecución**, no **verificación**. Con mi propio código:
+La cobertura mide **ejecución**, no **verificación**:
 
 ```ts
 it("valida el horario", () => {
-  validarHorario(alas(10), alas(11));   // se ejecutó entero… y no comprueba nada
+  validarHorario(alas(10), alas(11));   // se ejecuta entero… y no comprueba nada
 });
 ```
 
-Ese test recorre `validarHorario` de punta a punta, suma cobertura de líneas y de varias
-ramas, y **no mata un solo mutante**: si mañana alguien cambia `60` por `45`, sigue verde.
-Un porcentaje alto conseguido así es falsa confianza medida con precisión.
-
-**Y el segundo ejemplo, que es más incómodo porque es real y está en mi suite.** Los
-tests de `pedirJson` están al 100 % y verifican que un error de la API se propaga leyendo
-`cuerpo.error`. Si mañana el backend cambiara su contrato de errores de `{ error }` a
-`{ message }`, **mi cobertura seguiría en 100 % y mis tests seguirían en verde**, porque
-mi doble sigue contestando la forma vieja. El frontend se rompería igual en producción.
-Esto no es un defecto del test: es su límite. Un unit test prueba **mi** código, no la
-conexión entre las dos piezas — eso es el TP7.
-
-De ahí la lectura práctica: **una cobertura baja sí es señal confiable** de problema (hay
-código que nadie ejercita), pero **una cobertura alta no es señal confiable** de calidad.
-Sirve como detector de agujeros y como tendencia, no como trofeo.
+Suma cobertura y sigue verde si alguien cambia `60` por `45`. **Ejemplo real de mi suite**: los
+tests de `pedirJson` están al 100 % y leen `cuerpo.error`. Si el backend cambiara a
+`{ message }`, mi doble seguiría contestando la forma vieja: cobertura 100 %, tests verdes,
+producción rota. Cobertura baja **sí** es señal de problema; alta **no** es señal de calidad.
 
 ### El ejercicio del camino sin cubrir
 
-El reporte de cobertura me marcó cuatro ramas que ningún test recorría. Dos resultaron
-agujeros de verdad y las cubrí; dos son inalcanzables. Van las cuatro, porque la
-diferencia entre unas y otras es el punto del ejercicio.
+**`backend/src/services/crear-reserva.ts:90`** — `if (!rango) return pedidoInvalido(...)`
 
-**La que elijo como respuesta, porque es la más interesante: `backend/src/services/crear-reserva.ts:90`.**
+1. **Qué línea es**: se ejecuta siempre, pero sólo por el camino `false`.
+2. **Qué entrada la recorrería**: **ninguna**. Cuatro líneas antes ya se validó que
+   `fecha + horaInicio` sea una fecha válida, y si eso parsea, `rangoDelDia` también. Probé
+   `"25/09/2026"`, `""` y `"2026-13-45"`: las tres caen en el control anterior.
+3. **Qué decidí: no agregar el test.** Es una guarda que TypeScript obliga a escribir
+   (`rangoDelDia` devuelve `... | null`), no un caso de negocio. Ese 1,17 % que le falta a las
+   ramas del backend **es esto**. Lo mismo en el front: el `?? []` de `validacion.ts:107`.
 
-1. **Qué línea es.** `if (!rango) return pedidoInvalido("El parámetro fecha es inválido.");`
-   El reporte la marca en naranja: la línea se ejecuta siempre, pero solo por el camino
-   `false`.
-2. **Qué entrada la recorrería.** **Ninguna.** Para llegar a la línea 90 hay que haber
-   pasado, cuatro líneas antes, el control de que `new Date(`${fecha}T${horaInicio}:00`)`
-   sea una fecha válida. Si ese string parsea, entonces `new Date(`${fecha}T00:00:00`)`
-   —que es lo único que hace `rangoDelDia`— también parsea, así que nunca devuelve `null`
-   en este punto. Probé con `"25/09/2026"`, con `""` y con `"2026-13-45"`: las tres caen
-   en el control anterior, con otro mensaje.
-3. **Qué decidí: no agregar el test.** La rama no existe porque haya un caso de negocio
-   sin cubrir, existe porque `rangoDelDia` devuelve `{...} | null` y TypeScript **obliga**
-   a estrechar el tipo antes de usar `rango.desde`. Es una guarda del compilador, no un
-   camino. Y tampoco corresponde borrarla: sin ella el código no compila. Lo honesto es
-   dejarla y saber que ese 1,17 % que le falta a las ramas del backend **es esto**, y no
-   una regla sin probar.
+Y dos ramas que **sí eran agujeros**, y les escribí el test:
 
-**La misma situación, del lado del frontend: `src/lib/validacion.ts:107`**, el `?? []` de
-`transicionesDisponibles`. Es la rama que la guía advierte que "ninguna línea declara":
-no hay un `if` a la vista, la abre el operador. Ninguna entrada la recorre mientras el
-parámetro sea un `EstadoReserva`, porque las tres claves están en el objeto. Tampoco la
-agregué.
-
-**Y las dos que SÍ eran agujeros**, que es lo que el ejercicio vale la pena:
-
-- `services/reservas.ts` — la rama «la reserva no puede empezar a las 23:00» no la
-  recorría nadie. Buscando qué entrada la alcanzaba apareció el caso: **una reserva de
-  23:00 a 00:00**, que dura 60 minutos exactos y cuya hora de fin (`00:00`), comparada
-  como hora de reloj, es *menor* que las 23:00 — así que se cuela por el control del
-  cierre y la frena el otro. Le escribí el test. Sin abrir el reporte no se me hubiera
-  ocurrido que una reserva puede cruzar la medianoche.
-- `services/reservas.ts` — dentro de `cambiarEstado`, la rama que corta cuando la ventana
-  de 2 horas no se cumple. Yo tenía probada la regla 4 por un lado y la regla 5 por el
-  otro, pero **nunca su encadenamiento**: la cobertura me mostró que la composición no
-  estaba verificada. Le escribí el test.
+- La reserva **de 23:00 a 00:00**: dura 60 minutos y su fin (`00:00`) es *menor* que las 23:00,
+  así que se colaba por el control del cierre. Sin el reporte no se me ocurría.
+- En `cambiarEstado`, el **encadenamiento** de la regla 4 con la regla 5: las tenía probadas
+  por separado, nunca juntas.
 
 ### Cómo corre en el pipeline
 
-Los tests corren **adentro del contenedor**, en una etapa nueva del Dockerfile
-(`FROM build AS test`), y no como un paso de Node en el workflow. Es la misma decisión
-del TP4: el pipeline no sabe cómo se compila ni cómo se testea esta app, se lo sigue
-pidiendo al Dockerfile. La etapa parte de `build` porque ahí ya está todo lo que hace
-falta —Node, el código y las devDependencies, porque `npm ci` corre **sin**
-`--omit=dev`— y no reinstala nada.
+- Los tests corren **adentro del contenedor**, en una etapa `FROM build AS test` del Dockerfile
+  (misma idea del TP4: el pipeline le pide todo al Dockerfile). La etapa va **en el medio**: si
+  quedara última, un `docker build` sin `--target` publicaría el contenedor de tests.
+- Son pasos nuevos **dentro de `build-backend` y `build-frontend`**, sin jobs nuevos: esos jobs
+  ya eran *required checks* desde el TP4, así que el umbral frena el merge sin tocar la
+  protección de `main`.
+- El resultado se ve en el **Summary** de la corrida y como **artefacto descargable**
+  (`coverage-backend`, `coverage-frontend`), con `if: !cancelled()` para que exista también
+  cuando los tests fallan. Ejemplo: [corrida 36200285102](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36200285102)
+  ([PR #21](https://github.com/FranZago1/ingsoft3-tp01/pull/21)).
 
-🔴 **La etapa va en el MEDIO, entre `build` y `runner`.** Si quedara última, un
-`docker build` sin `--target` publicaría el contenedor de tests como imagen de
-producción, y nada se pondría rojo.
+### El Pull Request bloqueado
 
-Y es `ENTRYPOINT`, no `RUN`: así los tests no corren al construir la imagen sino cuando
-el pipeline la arranca, y el reporte sale por un volumen montado — el mismo mecanismo que
-el proyecto ya usaba.
-
-**Lo que se agregó al `ci.yml` son cuatro pasos por job, y ningún job nuevo.** Eso último
-es deliberado y es lo que hace que no haya que tocar la protección de `main`: los tests
-corren dentro de `build-backend` y `build-frontend`, que **ya son required checks desde
-el TP4**. El día que el umbral ponga uno en rojo, el merge se bloquea solo.
-
-El resultado se publica de dos formas, porque un número que nadie ve no cambia
-decisiones: una tabla de líneas/ramas/funciones en el **Summary** de la corrida, y el
-reporte HTML navegable como **artefacto descargable**. Se ve en cualquier corrida verde —por
-ejemplo [`actions/runs/36200285102`](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36200285102),
-la que introdujo todo esto ([Pull Request #21](https://github.com/FranZago1/ingsoft3-tp01/pull/21))—:
-ahí están las dos tablas en el Summary y los artefactos `coverage-backend` y
-`coverage-frontend` para bajar. Los dos pasos llevan
-`if: ${{ !cancelled() }}` para que el reporte exista **también cuando los tests
-fallaron**, que es justo cuando uno lo quiere mirar.
-
-📌 **Dos frenos en el paso del Summary, y hacen falta los dos.** El `test -f` cubre que el
-archivo no esté. El `if (!t.lines.total)` cubre el caso silencioso: si el `include`
-estuviera mal escrito y no matcheara ningún archivo, el `coverage-summary.json` **igual
-se escribe**, con los totales en cero — y con cero archivos medidos **el umbral ni se
-evalúa**. Sin ese segundo freno, un `include` roto publica una tabla vacía y el job queda
-en verde sin haber exigido nada.
-
-### El Pull Request bloqueado: la evidencia de que el freno existe
-
-Son **dos** Pull Requests, y cada uno prueba una cosa distinta. El primero *cuenta* la
-secuencia completa; el segundo la *prueba*, porque queda frenado y a la vista.
-
-#### El primero: rojo → los tests que faltaban → verde → merge
-
-**[Pull Request #22 — Huecos libres de una cancha en un día](https://github.com/FranZago1/ingsoft3-tp01/pull/22)**
-
-Agregué `huecosLibres()` en `frontend/src/lib/agenda.ts`: calcula los tramos en los que
-una cancha se puede reservar. Es código que la app necesita de verdad —hoy el usuario
-tiene que deducir los horarios libres mirando el listado— y entró **sin un solo test**.
-
-**[La corrida roja: `actions/runs/36200604544`](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36200604544)**
-
-Y acá está el punto de todo el práctico. El log del paso dice, textual:
+**El primero — [PR #22, huecos libres de una cancha](https://github.com/FranZago1/ingsoft3-tp01/pull/22):
+rojo → tests → verde → merge.** Agregué `huecosLibres()` en `frontend/src/lib/agenda.ts` sin
+tests. [La corrida roja (36200604544)](https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36200604544):
 
 ```
-Test Files  4 passed (4)
      Tests  57 passed (57)
 All files      |   76.19 |     98.5 |     100 |   76.19 |
- agenda.ts     |       0 |      100 |     100 |       0 | 9-64
 ERROR: Coverage for lines (76.19%) does not meet global threshold (90%)
 ```
 
-**No hay ningún error.** La imagen se construyó, el código compila, `tsc --noEmit` y el
-linter pasaron, y los **57 tests terminaron en verde**. El check `build-frontend` se puso
-rojo igual.
+- **Qué check**: `build-frontend` (required). Compilaba y los 57 tests pasaban.
+- **En qué métrica**: **líneas**, 76,19 % contra 90. Las ramas casi no se movieron (98,5 %).
+- **Por qué**: `agenda.ts` cae en el `include`, así que entró a la cuenta solo.
+- **Que el freno es real**: `gh pr merge 22` → *«the base branch policy prohibits the merge»*.
+- **Qué escribí**: nueve tests, **uno por camino que declara la función** (los tres filtros,
+  hueco contra apertura, contra cierre, del medio, reservas superpuestas, y un hueco de 30 min
+  que se descarta porque no alcanza para la reserva mínima). Volvió a 100 % / 98,73 % y se mergeó.
 
-- **Qué check**: `build-frontend`, que figura como *Required* desde el TP4.
-- **En qué métrica**: **líneas**, 76,19 % contra el umbral de 90. Las 35 líneas de
-  `agenda.ts` que ningún test recorría arrastraron el total del frontend desde 100 %.
-- **Por qué**: porque `agenda.ts` cae dentro del `include` de la cobertura, así que entró
-  a la cuenta **solo**, sin que yo tuviera que declararlo. Es exactamente el
-  comportamiento que buscaba al elegir `include` amplio con exclusiones explícitas.
+**El segundo — [PR #23, ocupación por cancha](https://github.com/FranZago1/ingsoft3-tp01/pull/23):
+abierto y en rojo hasta la defensa.** Un archivo (`services/estadisticas.ts`) sin tests: líneas
+del backend al 83,52 %, `build-backend` en rojo. Prueba que el freno existe sin depender de una
+captura.
 
-🔴 **Y un detalle que no esperaba, que vale como respuesta de defensa: las ramas casi no
-se movieron** (98,5 %, contra 98,48 % antes). En **vitest 3**, una función que ningún test
-llama **no suma ramas sin cubrir** — sus caminos ni se cuentan. O sea que si mi umbral
-estuviera puesto **solo sobre ramas**, este Pull Request habría pasado en verde con una
-función entera sin probar. Ésa es la razón concreta, y no teórica, por la que el umbral
-está sobre las dos métricas.
+**Por qué este freno es distinto del del TP4**: allá sólo frenaba algo que **no compilaba**.
+Acá todo compila y pasa, y lo frena **un criterio de calidad que elegí yo**.
 
-**Que el freno era real lo comprobé intentando mergear, no mirando una pantalla**:
-
-```
-$ gh pr merge 22 --squash
-X Pull request #22 is not mergeable: the base branch policy prohibits the merge.
-```
-
-con `mergeStateStatus=BLOCKED` y `build-frontend: FAILURE` en el rollup de checks.
-
-**Qué escribí para arreglarlo.** Nueve tests, y el número no lo inventé: es **uno por
-cada camino que la función declara**. Los conté leyendo los `if` y los `filter` del
-código, no mirando qué pintaba de naranja el reporte —
-
-los tres filtros (otra fecha, otra cancha, cancelada), el hueco contra la apertura, el
-hueco contra el cierre, el del medio, dos reservas superpuestas que tienen que ocupar un
-solo tramo, y un hueco de 30 minutos que hay que **descartar** porque no alcanza para la
-reserva más corta que el sistema acepta. Ese último es el que más me gusta: ofrecer un
-hueco que después el backend rechaza sería peor que no ofrecer nada.
-
-Con eso el frontend volvió a **100 % de líneas y 98,73 % de ramas**, el check pasó a verde
-y el Pull Request se mergeó. La conversación del #22 tiene la secuencia entera.
-
-#### El segundo: el que queda abierto y en rojo
-
-**[Pull Request #23 — Ocupación por cancha para el panel del admin](https://github.com/FranZago1/ingsoft3-tp01/pull/23)**
-
-Chiquito, de **un archivo**: `backend/src/services/estadisticas.ts`, con el mismo problema
-**sin arreglar**. Compila, pasa el linter y los 76 tests que ya existían siguen pasando;
-la cobertura de líneas del backend cae de 100 % a **83,52 %** y el check `build-backend`
-queda en rojo.
-
-**Queda abierto hasta la defensa, a propósito.** La pantalla de configuración de los
-required checks solo la ve quien administra el repositorio, y lo que dice ahí no prueba
-que el freno funcione. Un Pull Request frenado y visible sí, y quien corrige lo puede
-comprobar por su cuenta sin depender de una captura mía.
-
-#### Por qué este freno es distinto del del TP4
-
-En el TP4 la condición era *«la imagen se construye»*. Lo único que podía frenarte era
-que algo **no compilara**: la máquina diciendo «esto no anda». Hoy no hay nada roto —todo
-compila, todos los tests pasan— y el merge está bloqueado igual por **un número que elegí
-yo**. Es la primera vez en la materia que lo que decide si un cambio entra es un criterio
-de calidad y no la corrección sintáctica.
-
-🔴 **Y qué clase de error deja pasar igual**, que es la otra mitad de la respuesta. Este
-gate mide **cuánto código se ejecutó**, no **si lo que hace está bien**. Deja pasar sin
-inmutarse:
-
-- Un test sin `assert`, que ejecuta y no comprueba (sube la cobertura, no verifica nada).
-- Una regla **bien cubierta y mal entendida**: si yo entendí que la ventana de cancelación
-  eran 2 horas y en realidad el club quería 24, mis tests congelan el error y quedan en
-  verde para siempre. Ese dato no está en el repositorio: está en lo que dijo el cliente.
-- Que el backend cambie su contrato de errores: mis tests de `pedirJson` siguen verdes
-  porque mi doble contesta la forma vieja.
-- Cualquier problema que viva en el **pegamento excluido** de la cuenta.
-
-Con esto `main` queda con **tres guardianes**, y cada uno atrapa lo que los otros no ven:
-el Pull Request obligatorio (TP1), el build verde (TP4) y ahora los tests con su umbral
-(TP5). El único que puede detectar que el **requisito** se entendió mal es el primero,
-porque para eso hay que saber qué se quiso pedir. El cuarto —el análisis estático— llega
-en el TP9.
+**Qué deja pasar igual**: un test sin `assert`; una regla bien cubierta y **mal entendida** (si
+el club quería 24 h de ventana y yo entendí 2, los tests congelan el error); un cambio de
+contrato del backend (mi doble contesta la forma vieja); y lo que viva en el pegamento excluido.
+Lo del requisito mal entendido sólo lo ataja el primero de los tres guardianes de `main`: el PR
+revisado por una persona (TP1), junto al build verde (TP4) y los tests con umbral (TP5).
 
 ### Problemas encontrados
 
-**1. `vitest` 4 y 5 no se pueden instalar con el npm de esta máquina.** `npm i -D vitest`
-moría con `npm error Cannot read properties of null (reading 'edgesOut')`, un stack trace
-de `arborist` que no menciona ningún paquete. No es del proyecto: es un bug de npm 10.9.2
-resolviendo el conjunto de *peers opcionales* de vitest 5 (`@vitest/browser-playwright`),
-y lo busca **aunque le pidas explícitamente la 4**. Antes de eso, el intento con la 5 había
-fallado distinto y con razón: `vitest@5` exige `@types/node ≥ 22` y este proyecto usa la
-20, que es la que corresponde al `node:20-alpine` de las imágenes. Lo verifiqué
-consultando los `peerDependencies` de cada major con `npm view` en vez de ir probando.
-**Cómo lo resolví**: vitest 3.2.7, que soporta `@types/node@^20`. Lo que **no** hice fue
-`--force` ni `--legacy-peer-deps`: los dos habrían dejado un `package-lock.json` roto que
-el `npm ci` del contenedor reproduce igual de roto. Y de paso el primer intento fallido
-dejó el árbol de `node_modules` a medias, así que hubo que restaurarlo con `npm ci` antes
-de seguir.
-
-**2. `tsc` se llevaba los tests a la imagen de producción.** La etapa `build` del
-Dockerfile corre `npx tsc`, y el `tsconfig.json` incluía `src/**/*.ts` — o sea que los
-`*.test.ts` terminaban compilados adentro de `dist/`, y de ahí a la imagen final. No da
-ningún error: simplemente la imagen que se publica lleva código de tests adentro. Se
-arregla agregándolos al `exclude`. **Pero eso abrió un segundo agujero que no era
-evidente**: excluidos del `tsconfig.json`, los tests dejaban de ser typechequeados por
-nadie, porque vitest **ejecuta** TypeScript pero no lo verifica. Un test con un tipo mal
-puesto pasaría sin que nada avise. Por eso hay un `tsconfig.test.json` que existe solo
-para eso, y `npm run typecheck` corre los dos.
-
-**3. La zona horaria: el problema que habría aparecido recién en el pipeline.** Las reglas
-de esta app usan `getHours()`, o sea **hora local** (está documentado más arriba, en la
-sección de la aplicación). Mi máquina está en UTC−3 y el contenedor del pipeline corre en
-**UTC**. Si hubiera escrito las fechas de los tests como ISO con `Z`
-—`new Date("2026-09-25T10:00:00Z")`—, la misma reserva sería de las 10 acá y de las 7 en
-el runner: los tests de apertura pasarían en mi máquina y fallarían en la corrida, con un
-mensaje que no menciona en ningún momento la palabra «timezone». **La regla que adopté**:
-en los tests las fechas se construyen siempre con **componentes locales**
-(`new Date(2026, 8, 25, 10, 0)`), que significan la misma hora de reloj en cualquier lado.
-Está escrito como comentario en cada archivo de tests para que no se pierda.
-
-**4. El Docker local era demasiado lento para usarlo como bucle de verificación.** Cada
-`docker build --target test` del backend pasaba de diez minutos en esta máquina, y dos
-builds en paralelo dejaban al daemon sin responder ni a `docker ps`. **Cómo lo resolví**:
-separar lo que se puede verificar sin Docker de lo que no. Sin contenedor comprobé que la
-suite pasa, que `COVERAGE_DIR` redirige el reporte, que el `coverage-summary.json` tiene
-la forma que el paso del Summary espera, y —lo más importante— **que el umbral rompe de
-verdad**, corriendo vitest con un umbral imposible y mirando el código de salida:
-
-```
-umbral IMPOSIBLE  → exit=1     (con los 76 tests en verde)
-umbral real (90)  → exit=0
-```
-
-Lo único que quedaba sin verificar era si la etapa `test` del Dockerfile construye y corre,
-y eso lo confirmó la primera corrida, que es además el entorno que importa.
-
-**5. Elegir el umbral antes de medir habría sido inventarlo.** La tentación era poner 80
-—el número del ejemplo de la guía— y escribir la suite para superarlo. Lo hice al revés:
-escribí la suite mirando las reglas, medí, y recién con 100 y 98,8 en la mano elegí 90.
-La diferencia no es cosmética: un 80 sobre una medición de 100 habría dejado que entraran
-**28 líneas sin tests** antes de frenar, casi una función entera. El número sale de la
-medición, no del ejemplo.
-
-**6. Excluir la ruta antes de vaciarla habría inflado el número.** Iba a sacar
-`src/routes/**` de la cobertura porque «son handlers». Pero adentro todavía vivían
-`rangoDelDia()`, la construcción de las fechas y la lista de estados aceptados, que son
-**reglas**. Excluir ese archivo con las reglas adentro habría subido el porcentaje sin
-que nada estuviera más probado — la trampa exacta que el práctico no acepta. El orden
-correcto, y el que seguí, es: **primero se sacan las reglas al servicio, después se
-excluye el archivo.**
+1. **vitest 4/5 no se instalaba** (bug de npm 10.9.2, y vitest 5 exige `@types/node ≥ 22`; el
+   proyecto usa la 20). Usé **vitest 3.2.7**, sin `--force` ni `--legacy-peer-deps`, que habrían
+   dejado un lockfile roto.
+2. **`tsc` metía los tests en la imagen de producción** (el `tsconfig.json` incluía
+   `src/**/*.ts`). Los excluí, y como vitest ejecuta TS pero no lo typechequea, agregué un
+   `tsconfig.test.json` para que los tests sigan verificados.
+3. **La zona horaria**: las reglas usan hora local; mi máquina está en UTC−3 y el runner en UTC.
+   Con fechas ISO con `Z`, los tests pasarían acá y fallarían en el pipeline. Regla adoptada:
+   fechas con **componentes locales** (`new Date(2026, 8, 25, 10, 0)`).
 
 ### Uso de IA — TP5
 
-**Qué se hizo con asistencia de IA (Claude Code).** La sesión se usó de punta a punta:
-para leer el enunciado y mapearlo contra este stack, para escribir la suite de tests, los
-tres refactors de inyección de dependencias, las etapas `test` de los dos Dockerfiles, los
-pasos del `ci.yml` y la redacción de esta sección.
+**Con asistencia de IA (Claude Code)**: el mapeo del enunciado a este stack, la suite, los tres
+refactors, las etapas `test` de los Dockerfiles, los pasos del `ci.yml` y la redacción.
 
-**Qué se decidió a mano, y no se delegó.**
+**Decidido por mí**: qué lógica testear (la reserva doble), el umbral 90 sobre líneas y ramas,
+qué entra y qué sale de la cuenta, y cuántos tests para arreglar el #22.
 
-- **Qué lógica testear.** La respuesta a «dónde duele un bug en esta app» —la reserva
-  doble— es de negocio, no técnica, y define toda la suite.
-- **El umbral: 90, sobre líneas y ramas.** La herramienta puede medir; cuánto margen es
-  razonable antes de frenar es un criterio que hay que poder defender.
-- **Qué entra y qué sale de la cuenta de cobertura**, y en particular la decisión de
-  declarar en voz alta el caso discutible (`src/auth.ts`) en vez de dejarlo pasar.
-- **Cuántos tests escribir para arreglar el #22**: uno por camino declarado, contados
-  leyendo el código.
+**Cómo lo verifiqué**:
 
-**Cómo se verificó.** Nada de lo que afirma esta sección sale de lo que la herramienta
-dijo haber hecho:
+- Que el umbral frena: vitest con un umbral imposible → `exit=1` con los tests en verde.
+- Que el gate bloquea: el rechazo de GitHub al intentar mergear el #22.
+- Que los tests corren en el contenedor y los números coinciden con los locales (log de la corrida).
+- Que las ramas sin cubrir son inalcanzables: probando entradas concretas.
 
-- Que el umbral **frene de verdad**, corriendo vitest con un umbral por encima de la
-  medición y leyendo el **código de salida** (`exit=1`), no el mensaje en pantalla.
-- Que el gate **bloquee de verdad**, intentando mergear el #22 por línea de comandos y
-  recibiendo el rechazo de GitHub (`the base branch policy prohibits the merge`), igual
-  que se había hecho en el TP4.
-- Que los tests corran **adentro del contenedor** y no solo en la máquina, leyendo del log
-  de la corrida las líneas `Tests 57 passed` y la tabla de cobertura del paso
-  `Correr los tests del frontend con coverage`.
-- Que los números del contenedor **coincidan** con los locales: 100 / 98,83 en el backend
-  y 100 / 98,48 en el frontend, iguales de los dos lados.
-- Que las ramas sin cubrir fueran realmente inalcanzables, **probando entradas concretas**
-  (`"25/09/2026"`, `""`, `"2026-13-45"`) y viendo que las tres caen en el control anterior.
-- Que la versión de cada action existiera, consultando los tags por la API de GitHub antes
-  de pushear.
-- Que la etapa `test` no quedara última en ningún Dockerfile, leyendo el orden de los
-  `FROM` de los dos archivos.
-- Que el refactor no rompiera la aplicación real: los tests pasan igual si el cableado
-  quedó mal, porque le pasan el doble a mano.
+**Qué verifica cada assert**: casi todos están sobre un borde. Por ejemplo, el
+`not.toHaveBeenCalled()` de `crear-reserva.test.ts` comprueba que **la regla frenó la escritura**
+en la base, y el `toHaveBeenCalledWith` de `http.test.ts` que la cookie de sesión se reenvía.
 
-**Sobre los tests que escribió la IA, que es lo que este práctico pide poder defender.**
-Cada assert de la suite comprueba una regla concreta y casi todos están puestos **sobre un
-borde**: el `toContain("120")` del mensaje de duración existe porque un rechazo que no
-explica el límite obliga al usuario a adivinarlo; el `not.toHaveBeenCalled()` de
-`crear-reserva.test.ts` no mira un valor devuelto sino que **la regla frenó la escritura**;
-el `toHaveBeenCalledWith` de `http.test.ts` comprueba que la cookie de sesión se reenvía,
-porque si algún día deja de hacerlo el usuario ve su listado vacío en vez de un error.
-
-**Y qué NO está cubierto, que es la otra mitad de la pregunta**: la concurrencia. Dos
-pedidos simultáneos para el mismo horario pasan los dos la validación de solapamiento y
-crean dos reservas superpuestas, porque la consulta y el `create` no están en una
-transacción y la base no tiene una restricción que lo impida. **Ningún unit test puede
-atrapar eso** —es una carrera entre dos procesos, no una regla mal escrita— y mi cobertura
-del 100 % no dice absolutamente nada al respecto. Es el mejor ejemplo propio de por qué el
-número no es un certificado de que el código funciona.
+**Qué NO está cubierto**: la **concurrencia**. Dos pedidos simultáneos al mismo turno pasan los
+dos la validación y crean dos reservas, porque la consulta y el `create` no están en una
+transacción. Ningún unit test lo atrapa, y mi 100 % no dice nada de eso.
 
 ---
 
 ## TP6 — CD: environments, aprobaciones y deployment patterns
 
-Hasta el TP5 el pipeline **verificaba** y no dejaba nada: la imagen nacía y moría adentro
-del runner. Desde este TP **entrega**: publica la imagen que verificó, la despliega sola en
-QA y la lleva a producción sólo cuando una persona lo aprueba.
+Desde este TP el pipeline **entrega**: publica la imagen que verificó, la despliega sola en QA y
+la lleva a PROD sólo con aprobación humana.
 
 ### El artefacto: se publica sólo lo que pasó la verificación
 
-Cada push a `main` publica dos imágenes en `ghcr.io`, etiquetadas con el commit que las
-produjo: `ghcr.io/franzago1/ingsoft3-tp01-backend:sha-<commit>` y la del frontend. El nombre
-va **escrito a mano y en minúsculas**: `github.repository` es `FranZago1/…` y el registry
-rechaza mayúsculas.
+Cada push a `main` publica `ghcr.io/franzago1/ingsoft3-tp01-{backend,frontend}:sha-<commit>`. La
+garantía sale de **encadenar tres controles**:
 
-Que en el registry sólo haya cosas verificadas no depende de un control nuevo: sale de
-**encadenar tres** que ya estaban.
+1. **Nada entra a `main` sin verde** (los *required checks* del TP4 con el umbral del TP5).
+2. **Sólo `main` publica**: login y push llevan `github.event_name == 'push' && github.ref == 'refs/heads/main'`.
+3. **Publicar es el último paso del job que corrió los tests**: si los tests fallan, el job se
+   corta antes. **La condición es el orden.**
 
-1. **Nada entra a `main` sin el pipeline en verde**: los *required checks* del TP4, con el
-   umbral de cobertura del TP5 adentro.
-2. **Sólo lo que entra a `main` se publica**: el login y el `push:` del build llevan
-   `github.event_name == 'push' && github.ref == 'refs/heads/main'`. Van las **dos**
-   condiciones y no sólo la del evento: si mañana el disparador escucha otra rama, un push
-   ahí publicaría algo que nunca pasó por un Pull Request. La garantía vive en el paso que
-   publica, no en el `on:` del archivo.
-3. **Publicar es el ÚLTIMO paso del mismo job que corrió los tests.** No hay ningún `if`
-   que diga «si los tests pasaron»: los steps de un job se cortan al primer error, así que
-   si el `docker run` de los tests da rojo, el paso que publica nunca llega a correr. La
-   condición **es el orden**. Por eso el build de la imagen final se mudó de arriba (donde
-   estaba en el TP4, antes de los tests) al fondo del job; y por eso esos dos pasos **no**
-   llevan `!cancelled()` como los del reporte de cobertura.
-
-Si se publicara igual con los tests en rojo, «estar en el registry» dejaría de significar
-«pasó la verificación» y el registry sería un depósito de cosas que alguien construyó alguna
-vez: nadie podría tomar una imagen de ahí y desplegarla sin volver a preguntarse si anda.
-
-**Lo que la cadena NO garantiza.** Garantiza lo que publica **el pipeline**, no lo que
-físicamente puede entrar: con permisos, un `docker push` desde mi notebook sube cualquier
-cosa con cualquier etiqueta, y además una etiqueta es un nombre que se puede volver a
-apuntar a otra imagen. Lo que identifica una imagen sin ambigüedad es su **digest**
-(`sha256:…`, el hash del contenido): desplegar por digest y no por etiqueta es lo que
-cerraría ese hueco.
-
-**El permiso va por job, no a nivel del workflow.** `permissions:` arriba de todo
-*reemplaza* el default de todos los jobs; declarado en `build-backend` y `build-frontend`
-toca sólo a los que publican (mínimo privilegio). Los jobs de deploy no tienen
-`packages: write`. `contents: read` va explícito porque lo que no se lista queda sin
-permiso y el checkout no podría leer el código. La credencial es el `GITHUB_TOKEN` de la
-corrida: ningún secret nuevo, vive lo que dura el job.
-
-La imagen del backend lleva además el commit adentro (`--build-arg APP_COMMIT=<sha>`), que
-`/api/health` informa.
+Si se publicara con rojo, «estar en el registry» dejaría de significar «pasó la verificación».
+**Lo que no garantiza**: un `docker push` a mano entra igual, y una etiqueta se puede re-apuntar;
+lo inequívoco es el **digest** (`sha256:…`). `packages: write` va sólo en los jobs de build, con
+el `GITHUB_TOKEN` de la corrida.
 
 ### Continuous Delivery, no Continuous Deployment
 
-Implementé **Continuous Delivery**: todo cambio integrado llega **solo** a QA, y a PROD
-sólo con un humano que lo autoriza. No Continuous Deployment porque mi red de seguridad no
-lo sostiene: los tests son unitarios (no hay tests de punta a punta contra la app
-desplegada), no hay monitoreo ni alertas, y el smoke prueba que la app contesta, no que
-funcione. Automatizar el último paso con eso sería automatizar la propagación de errores.
-Para la tercera me faltaría: tests E2E contra QA como compuerta, métricas de error y
-latencia en PROD, y un rollback automático cuando esas métricas se van de rango.
+Todo llega solo a QA; a PROD, sólo con aprobación. No Deployment porque mi red no lo sostiene:
+sin e2e, sin monitoreo ni alertas, y un smoke que dice que la app contesta, no que funciona. Me
+faltarían e2e como compuerta, métricas de error/latencia en PROD y rollback automático.
 
 ### Dos entornos: Render + Neon
 
@@ -1785,45 +1444,19 @@ latencia en PROD, y un rollback automático cuando esas métricas se van de rang
 | --- | --- | --- |
 | Front | https://reservapadel-front-qa.onrender.com | https://reservapadel-front-prod.onrender.com |
 | API | https://reservapadel-api-qa.onrender.com | https://reservapadel-api-prod.onrender.com |
-| Base | Neon, database `app_qa` | Neon, database `app_prod` |
+| Base | Neon, `app_qa` | Neon, `app_prod` |
 
-Los cinco puntos del contrato: (1) **dos entornos separados** con URL pública cada uno;
-(2) **una base por entorno** (dos databases del mismo proyecto de Neon); (3) front y back
-**como contenedores** construidos con mis Dockerfiles (runtime *Docker* en los cuatro
-servicios); (4) el deploy lo **dispara el pipeline** con el commit que verificó, con
-**Auto-Deploy en Off** en los cuatro; (5) PROD **detrás de la aprobación** del environment
-`production`.
+Los cinco puntos: dos entornos con URL; una base por entorno; front y back como contenedores de
+mis Dockerfiles; deploy disparado por el pipeline con **Auto-Deploy en Off**; PROD detrás de la
+aprobación. **Neon y no el Postgres de Render** porque el de Render expira a los 30 días.
 
-Por qué Neon y no el Postgres de Render: el gratuito de Render **expira a los 30 días**, no
-llega a la defensa. El de Neon es permanente, con límites de uso.
+**Por variable** (cambia por entorno): `DATABASE_URL` y `JWT_SECRET` en la api, `BACKEND_URL` en
+el front. **Adentro de la imagen**: código, dependencias, migraciones, seed y `APP_COMMIT`. Mi front
+no usa nginx: el middleware de Next lee `BACKEND_URL` **en cada pedido**, así que la misma imagen
+sirve en QA y PROD.
 
-**El esquema se crea solo.** El `docker-entrypoint.sh` del TP2 corre
-`prisma migrate deploy` y el seed al arrancar, así que las tablas aparecieron en las dos
-bases la primera vez que cada API arrancó en Render. La cadena de conexión va en formato
-URI (`postgresql://…?sslmode=require`) y contra el host **directo**, no el `-pooler`:
-`migrate deploy` necesita una conexión de sesión que el pooler de Neon no garantiza.
-
-**Qué quedó por variable y qué quedó adentro de la imagen.**
-
-| Por variable de entorno (cambia por entorno) | Adentro de la imagen (igual en todos) |
-| --- | --- |
-| `DATABASE_URL` (api) | El código compilado y las dependencias |
-| `JWT_SECRET` (api, distinto en QA y PROD) | Las migraciones y el seed |
-| `BACKEND_URL` (front) | `HOSTNAME=0.0.0.0`, `NODE_ENV=production` |
-| `PORT` (lo pone Render) | El commit que la produjo (`APP_COMMIT`) |
-
-**Mi front no usa nginx, y no le hizo falta la plantilla de la guía.** Es Next.js con SSR:
-el proxy de `/api/*` al backend ya lo hacía, desde el TP2, `src/middleware.ts`, que lee
-`BACKEND_URL` **en cada pedido** y no en el build (el `rewrites()` de `next.config.ts`
-quedaría horneado en la imagen). Es la misma idea que la plantilla de nginx: la dirección
-del backend no está en la imagen, y **la misma imagen** sirve en QA y en PROD, cada una
-hablando con su API. Se comprueba desde afuera: `https://<front-de-cada-entorno>/api/health`
-contesta la API de **su** entorno.
-
-**Cómo compruebo que cada entorno usa su propia base.** Inserto un dato inconfundible
-**sólo en `app_prod`** desde el SQL Editor de Neon y compruebo que aparece en PROD y no en
-QA. Si apareciera en los dos, las dos APIs estarían escribiendo en la misma base: el error
-más silencioso del TP, porque ningún check se pone rojo.
+**Bases separadas de verdad**: inserto un dato sólo en `app_prod` desde el SQL Editor y en QA no
+aparece.
 
 ### La cadena de promoción
 
@@ -1834,916 +1467,383 @@ build-frontend ┘  env: qa         env: production (⏸ required reviewer)
                   sólo en main    needs: deploy-qa · concurrency: deploy-prod
 ```
 
-- **`needs:`** encadena las compuertas: sin los dos builds verdes no hay deploy a QA, y sin
-  QA vivo (smoke verde) no hay deploy a PROD.
-- **`if: github.ref == 'refs/heads/main'`** en `deploy-qa`: los PRs verifican pero no
-  despliegan. `deploy-prod` no lo repite y no es un olvido: depende de `deploy-qa`, así que
-  en un PR queda salteado igual. La condición se hereda por la cadena.
-- **`environment:`** conecta cada job con su environment: hereda sus secrets y sus
-  variables, y cada deploy queda en el historial de *Deployments*.
-- **`concurrency: deploy-prod`** evita dos deploys a PROD pisándose. No ordena la cola de
-  aprobaciones: una corrida vieja esperando review sobrevive a una nueva, y aprobarla
-  haría **retroceder** PROD. Ésa se rechaza a mano.
+- **`needs:`** encadena: sin builds verdes no hay QA; sin smoke de QA verde no hay PROD.
+- **`if:` de `main`** en `deploy-qa`: los PRs verifican pero no despliegan.
+- **`environment:`** da a cada job los secrets de su entorno y lo registra en *Deployments*.
+- **`concurrency: deploy-prod`** evita dos deploys a la vez, pero no ordena aprobaciones:
+  aprobar una corrida vieja haría **retroceder** PROD.
 
-**El `&ref=$GITHUB_SHA` es la pieza más importante del archivo.** El deploy hook de Render
-pelado despliega **la punta de la rama**, no el commit que esta corrida verificó. Con dos
-merges seguidos, la corrida del primero desplegaría el segundo, que no pasó por nada; y en
-PROD es peor, porque entre que la corrida queda esperando la aprobación y el approve pueden
-pasar horas: aprobaría A y subiría lo último que haya en `main`. Con `&ref` le digo a
-Render **qué commit** construir. Va `&` y no `?` porque la URL del hook ya trae `?key=…`.
+**`&ref=$GITHUB_SHA`** en el hook: sin eso Render despliega la **punta de la rama**, no el commit
+verificado (con dos merges seguidos, o horas de espera hasta el approve, subiría otro código).
 
-**El alcance de cada secret.**
-
-| Secret / variable | Dónde vive | Quién lo lee |
+| Secret | Dónde vive | Quién lo lee |
 | --- | --- | --- |
-| `RENDER_HOOK_API_QA`, `RENDER_HOOK_FRONT_QA` | environment `qa` | sólo `deploy-qa` |
-| `RENDER_HOOK_API_PROD`, `RENDER_HOOK_FRONT_PROD` | environment `production` | sólo `deploy-prod`, **y recién después del approve** |
-| `URL_API`, `URL_FRONT` (variables, no secrets) | cada environment, la suya | el smoke de ese entorno |
-| `GITHUB_TOKEN` | lo genera cada corrida | los pasos que publican en ghcr |
+| Hooks de QA (api y front) | environment `qa` | sólo `deploy-qa` |
+| Hooks de PROD (api y front) | environment `production` | sólo `deploy-prod`, **después del approve** |
+| `URL_API`, `URL_FRONT` (variables) | cada environment | el smoke |
 
-Un deploy hook **es una credencial**: quien tiene la URL despliega mi app. Si los de PROD
-estuvieran en el repo, cualquier job de cualquier workflow —incluido uno que alguien
-agregue en un PR— podría leerlos y desplegar a producción **sin pasar por la aprobación**:
-el gate quedaría decorativo. Dentro del environment, sin approve no los lee nadie. Las URLs
-de los servicios van como *variables* y no como secrets porque son públicas; que estén en
-el environment hace que el mismo smoke sirva para los dos entornos sin escribir URLs en el
-YAML.
-
-Los hooks se cargaron con `gh secret set … --env …` **sin `--body`**: así `gh` pide el
-valor y la URL secreta no queda en el historial de la terminal.
+Un hook **es una credencial**: en el repo, cualquier job podría desplegar a PROD sin aprobación.
 
 ### El smoke test: qué prueba y qué no
 
-Después de disparar los hooks, el job reintenta hasta **45 veces cada 20 s** (15 min) y da
-verde sólo si se cumplen las cuatro cosas en la misma vuelta:
+Reintenta hasta 15 min (45 × 20 s, `--max-time 10` por curl) por el cold start y el build, y
+pide en la misma vuelta: `/api/health` con **el commit de esta corrida**, `/api/health/db`
+(toca una tabla real), `/login` del front, y `/api/health` **a través del front**.
 
-1. `/api/health` de la API informa **el commit de esta corrida** — no alcanza un 200.
-2. `/api/health/db` contesta: cuenta las canchas, así que toca **una tabla real** de la base
-   de ese entorno (un `SELECT 1` pasaría con la base vacía o sin migrar).
-3. `/login` del front contesta.
-4. `/api/health` **a través del front** contesta: prueba el cableado front → API.
-
-**Por qué el commit y no sólo un 200.** El hook responde al instante y Render construye en
-segundo plano; mientras tanto —o si ese build falla— sigue sirviendo la versión anterior.
-Un smoke que sólo mira el 200 da verde contra la versión **vieja**. El commit lo pone
-Render en `RENDER_GIT_COMMIT`, y la imagen del pipeline lo trae como `APP_COMMIT`. En la
-primera corrida se vio: en las vueltas 1 a 3 la API contestaba 200 pero con la versión
-anterior (la que todavía no informaba commit, `null`), mientras Render construía. Un smoke
-de «¿contesta?» hubiera dado verde ahí mismo, contra el código viejo.
-
-**Por qué reintenta.** El free tier duerme el servicio a los 15 minutos sin tráfico y el
-primer request lo despierta con un cold start de hasta un minuto; el build de cada servicio
-tarda de 2 a 5 minutos. Un curl seco daría falsos rojos. Cada curl lleva `--max-time 10`:
-un servicio despertando acepta la conexión y no contesta, y sin tope el curl esperaría
-hasta que el runner mate el job.
-
-**Lo que NO prueba.** El commit lo verifico sólo en la API: del front sé que contesta y que
-llega a su API, pero no qué versión corre. No prueba que un usuario pueda loguearse ni
-reservar (no hay tests E2E), ni que la app ande bien bajo carga, ni que los datos estén
-bien: prueba que el entorno **está vivo y es el que desplegué**, no que funciona.
+**El commit y no sólo un 200** porque Render sirve la versión **vieja** mientras construye (o si
+el build falla): en la primera corrida hubo 3 vueltas con 200 y versión anterior.
+**No prueba** qué versión corre el front ni que un usuario pueda reservar: prueba que el entorno
+**está vivo y es el que desplegué**.
 
 ### El gate humano: qué miro antes de aprobar
 
-`production` tiene required reviewer (yo), con *Prevent self-review* desactivado: GitHub sí
-permite aprobar deploys propios, a diferencia de los PRs. `qa` no tiene reglas, a propósito.
-
-**Antes de aprobar miro:**
-
-1. Que **ésta sea la corrida más nueva** esperando aprobación. Si hay una más vieja
-   también esperando, la rechazo primero: aprobarla haría retroceder PROD.
-2. El **smoke de QA en verde para este mismo commit**, y cuántas vueltas tardó: si tardó
-   mucho más que lo normal, algo cambió.
-3. **Qué cambia**: el PR que produjo el commit. Si toca migraciones, variables de entorno o
-   el `ci.yml`, lo miro con más cuidado (una migración no se deshace con un rollback).
-4. Abrir la URL de QA y probar a mano lo que cambió.
-5. Que PROD esté en el commit que creo que está (`/api/health` de PROD).
-
-**Lo que mi aprobador NO puede ver**: cómo se comporta el cambio con tráfico real, errores
-que aparecen sólo con los datos de PROD, y la salud de PROD más allá del smoke — no tengo
-métricas ni logs centralizados. Para decidir mejor me faltaría observabilidad: tasa de
-errores y latencia por versión, y alertas.
-
-**El gate NO agrega valor** si el aprobador aprueba por reflejo, sin criterios: es latencia
-sin seguridad. Tampoco en un equipo con tests E2E y monitoreo maduros, donde Continuous
-Deployment con rollback automático es más seguro que un humano apurado.
+Required reviewer en `production` (yo, sin *Prevent self-review*). Miro: que sea **la corrida
+más nueva** esperando; el smoke de QA verde **para este commit**; qué cambia (migraciones,
+variables o `ci.yml`, con más cuidado); el cambio probado a mano en QA; y que PROD esté en el
+commit que creo. **No veo** cómo se comporta con tráfico y datos reales: me faltan errores y
+latencia por versión, y alertas.
 
 ### El rechazo y la aprobación
 
-- **Aprobación**: corrida https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36643549553
-  (QA verde → *Waiting for review* → aprobado → PROD verde).
-- **Rechazo**: corrida https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36645604430.
-  El smoke de QA dio verde con la API ya en `0538875`, pero al abrir el `/login` de QA el
-  front seguía sirviendo la versión anterior, sin el subtítulo que traía ese cambio: el
-  smoke verifica el commit de la API y no el del front. Motivo registrado: *«El smoke de QA
-  dio verde con la API en 0538875, pero el front de QA seguía mostrando la versión
-  anterior, no apruebo sin ver el cambio en QA»*. El job `deploy-prod` quedó en *failure*
-  sin llegar a leer los secrets de PROD: la máquina obedeció al humano. El cambio llegó a
-  PROD después, con la corrida siguiente, aprobada.
+- **Aprobación**: https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36643549553
+- **Rechazo**: https://github.com/FranZago1/ingsoft3-tp01/actions/runs/36645604430 — *«El smoke de
+  QA dio verde con la API en 0538875, pero el front de QA seguía mostrando la versión anterior, no
+  apruebo sin ver el cambio en QA»*. `deploy-prod` terminó sin leer los secrets de PROD.
 
-### La letra chica del free tier, y cómo la maneja el pipeline
+### La letra chica del free tier
 
-- **Render duerme cada servicio** a los ~15 min sin tráfico; el primer request tarda hasta
-  ~1 min. → El smoke reintenta con `--max-time` en cada curl.
-- **750 horas de instancia por mes, por workspace** (no por servicio), repartidas entre mis
-  cuatro servicios. Un servicio despierto 24 h se come 720 él solo; como duermen, el consumo
-  real es el de las demos y los deploys. No dejo nada haciendo ping para mantenerlos
-  despiertos: eso agotaría las horas y Render suspendería los servicios hasta fin de mes.
-- **500 minutos de build por mes.** Cada promoción construye hasta cuatro veces (back y
-  front, QA y PROD), de 2 a 5 min cada una: unos 15–20 min por cambio que llega a PROD, o
-  sea del orden de 25 promociones completas por mes. Si se acaban, Render deja de construir
-  y el hook responde igual: un smoke que sólo mirara el 200 daría verde contra la versión
-  vieja. **El mío no**, porque exige el commit.
-- **Neon** suspende el cómputo a los ~5 min sin uso (se despierta en segundos) y limita el
-  almacenamiento a 0,5 GB: sobra para esta app.
+- Render **duerme** los servicios a los ~15 min (cold start ~1 min) → el smoke reintenta.
+- **750 h/mes por workspace**, compartidas → nada de pings para mantenerlos despiertos.
+- **500 min de build/mes** → si se acaban, el hook responde igual sin construir; mi smoke lo
+  detecta porque exige el commit.
+- Neon suspende a los ~5 min y despierta en segundos.
 
 ### Qué garantía pierdo porque Render reconstruye
 
-El pipeline publica la imagen que verificó, pero Render **no la usa**: con el hook y el
-`&ref`, vuelve a construir mis Dockerfiles desde el repositorio, en ese commit. Promuevo
-**el mismo commit, no la misma imagen**. Lo que puede salir distinto entre el build del
-pipeline y el de Render: una imagen base `node:20-alpine` que se actualizó entre los dos
-builds, un paquete del sistema (`apk add openssl`) en otra versión, o el motor de Prisma
-descargado de nuevo. El lockfile fija las dependencias de npm, pero no todo lo que entra a
-la imagen. Y hay otra pérdida: se construye **cuatro veces** lo que ya se había construido
-una, gastando minutos de build del free tier. Desplegar la imagen del registry por su
-digest es lo que resuelve esto, y es lo que viene en el TP7.
+Promuevo **el mismo commit, no la misma imagen**: lo que el lockfile no fija (la base
+`node:20-alpine`, `apk add openssl`, el motor de Prisma) puede salir distinto. Lo resuelve el TP7.
 
 ### Deployment pattern para producción real
 
-Hoy despliego con **recreate** implícito: Render levanta la versión nueva y recién cuando
-está sana corta el tráfico de la vieja, pero con una sola instancia y sin control mío.
-
-Para esta app con usuarios reales elegiría **blue-green + feature flags**:
-
-- **Blue-green** porque el riesgo más caro de un club que reserva canchas no es un bug
-  sutil que afecte a un 5 % (eso lo encuentra canary), sino una versión que no anda y deja
-  a todos sin reservar en el horario pico de la tarde. Blue-green me da **rollback
-  instantáneo** (volver el switch) y probar la versión nueva completa antes de mandarle
-  tráfico. El costo es 2× de infraestructura, bajo para una app de este tamaño (dos
-  contenedores chicos).
-- **Canary no** porque exige un volumen de tráfico que un club no tiene (un 5 % de pocas
-  decenas de usuarios no da una señal estadística) y observabilidad que hoy no tengo.
-- **Feature flags** para lo que cambia reglas de negocio (por ejemplo, la ventana de
-  cancelación de 2 h): se despliega apagado y se prende primero para el admin.
-- **El cuidado que exigen los dos**: la base es **una sola** para blue y green. Una
-  migración tiene que ser compatible con las dos versiones a la vez (primero agregar la
-  columna, después usarla, recién en un deploy posterior borrar la vieja).
-
-**Qué observabilidad me falta**: tasa de errores 5xx y latencia por versión, logs
-centralizados y alertas. Sin eso no sé si green está sano más allá del smoke.
+**Blue-green + feature flags.** El riesgo caro de un club es una versión que deja a **todos**
+sin reservar en el horario pico: blue-green da rollback instantáneo y probar la versión completa
+antes del tráfico, por 2× de infraestructura (barato acá). **Canary no**: no hay tráfico para una
+señal estadística ni observabilidad. **Flags** para reglas de negocio: se despliega apagado y se
+prende primero para el admin. Cuidado: la base es una sola, así que las migraciones tienen que
+servir a las dos versiones (expand/contract).
 
 ### Plan de rollback
 
-Como el deploy se dispara con el commit explícito, **volver atrás es disparar los mismos
-hooks con el SHA del último deploy bueno**:
+Disparar los hooks de PROD con `&ref=<sha del último deploy bueno>` (sale de *Deployments* o del
+tag anterior), esperar el **live** en *Deploys* de Render y confirmar con `/api/health`.
 
-1. Detectar el problema en PROD (hoy: un usuario o yo mirando; no hay alertas).
-2. Buscar el SHA anterior en *Deployments → production*, o el del tag de la release previa
-   (`git rev-list -n1 v6.0.0`).
-3. Copiar los deploy hooks de PROD desde Render (el secret de GitHub no se puede releer) y
-   dispararlos con `&ref=<sha-anterior>`:
+**Medido: 83 segundos** (de `4ec4e09` a `65bdf88`), con las horas en *Deploys* de los dos
+servicios de PROD. Rápido porque ese commit ya estaba construido; si no, 2 a 5 min por servicio.
+El MTTR real lo domina la **detección**, porque no hay alertas.
 
-   ```bash
-   read -rs HOOK_API_PROD && export HOOK_API_PROD
-   read -rs HOOK_FRONT_PROD && export HOOK_FRONT_PROD
-   curl -fsS "$HOOK_API_PROD&ref=$SHA_ANTERIOR"; curl -fsS "$HOOK_FRONT_PROD&ref=$SHA_ANTERIOR"
-   ```
-4. Esperar a que Render → servicio de PROD → *Deploys* muestre ese commit como **live**, y
-   confirmar con `/api/health` de PROD que informa el SHA anterior.
-
-La alternativa por la interfaz es re-correr **sólo** el job `deploy-prod` de la corrida
-vieja (no *Re-run all jobs*, que redespliega también QA): vuelve a pedir aprobación y
-GitHub sólo lo permite hasta 30 días. El hook con el SHA funciona siempre.
-
-**Medido: 83 segundos.** Con PROD en `4ec4e09`, disparé los dos hooks de PROD con
-`&ref=65bdf88…` (el deploy bueno anterior) y paré el cronómetro cuando Render →
-*Deploys* mostró ese commit como **live** en `reservapadel-api-prod` y en
-`reservapadel-front-prod` —no con el `/api/health`, que contesta verde también con la
-versión que estoy revirtiendo—. El rastro queda en *Deploys* de los dos servicios, con la
-hora de inicio y la de live. Después comprobé desde afuera que PROD había vuelto:
-`/api/health` dejó de informar el campo `commit` (que no existía en `65bdf88`) y el
-subtítulo nuevo no estaba en el `/login`.
-
-Fue rápido porque Render ya había construido ese commit antes; volver a un commit que
-nunca construyó lleva un build completo, de 2 a 5 minutos por servicio. A eso hay que
-sumarle el tiempo de **detectar** el problema, que hoy depende de que alguien lo vea: sin
-alertas, el tiempo de recuperación real (MTTR, la cuarta métrica DORA) lo domina la
-detección, no el rollback.
-
-**Lo que el rollback de código NO deshace: los datos.** Las migraciones corren al arrancar
-y `prisma migrate deploy` sólo va hacia adelante: si una versión borró una columna, volver
-al código anterior no la trae de vuelta (y ese código puede romperse al no encontrarla).
-Tampoco se deshacen las reservas creadas mientras la versión mala estuvo arriba. Para eso
-haría falta: migraciones compatibles hacia atrás (expand/contract), backups o el *branching*
-/ restore a un punto en el tiempo de Neon antes de cada migración, y en el extremo, un plan
-de restauración probado.
+**No deshace los datos**: las migraciones sólo van hacia adelante y las reservas creadas quedan.
+Haría falta expand/contract y un restore a un punto en el tiempo de Neon antes de cada migración.
 
 ### Problemas encontrados
 
-- **El proxy del front a la API daba 404 en Render.** La API de QA ya informaba el commit
-  nuevo, pero `https://reservapadel-front-qa.onrender.com/api/health` devolvía
-  `404 page not found`, sin el header `x-render-origin-server`: la respuesta la cortaba el
-  borde de Render, no mi app. Construí el front en local y lo arranqué con el mismo
-  `BACKEND_URL` que debía tener en Render, y el proxy funcionaba, incluso mandándole los
-  headers que agrega Render: el código estaba bien. El problema era el valor de
-  `BACKEND_URL` cargado en los servicios de front; corregido, el smoke dio verde en la
-  vuelta siguiente: 38 vueltas en total, 3 esperando el build de la API y 35 con la API
-  ya en el commit correcto pero el front sin poder llegar a ella. Lo importante: **el smoke lo atrapó**. Las dos APIs y los dos fronts
-  «andaban» por separado, el build estaba verde, y sin el chequeo de `/api/health` a
-  través del front QA hubiera quedado verde con el login roto.
-- **PROD corría un commit que el gate no había aprobado.** Antes de aprobar la primera
-  corrida, `/api/health` de PROD ya informaba `4ec4e09`, el commit que estaba esperando
-  review: algo lo había desplegado por fuera del pipeline. Revisé los cuatro servicios y
-  dejé **Auto-Deploy en Off** en todos. Es exactamente lo que el criterio 5 del gate
-  («PROD está en el commit que creo») existe para atrapar, y por qué la defensa pide
-  mostrar el Auto-Deploy apagado: prendido, el pipeline es decorado.
-- **Apreté *Approve* en vez de *Reject*** en esa misma corrida. Quedó como la evidencia de
-  la aprobación, y el rechazo se hizo en la corrida siguiente.
-- **Mi app no tenía un endpoint público que tocara la base.** Todos los de datos piden
-  sesión. Agregué `/api/health/db` (sin auth, sólo cuenta canchas), separado de
-  `/api/health` para que el `HEALTHCHECK` del Dockerfile, que corre cada 10 s, no despierte
-  a Neon todo el tiempo.
-- **Mayúsculas en el nombre de la imagen**: `github.repository` es `FranZago1/ingsoft3-tp01`
-  y ghcr no acepta mayúsculas; el nombre va escrito a mano.
-
-**Un riesgo que queda abierto**: el seed crea `admin@club.com` con una contraseña conocida
-(documentada en el README) también en PROD. Para una entrega académica está bien; en una
-producción real el seed de usuarios no correría en PROD, o la contraseña vendría de un
-secret.
+- **El proxy del front daba 404 en Render**: el código andaba en local con el mismo `BACKEND_URL`;
+  el valor en Render estaba mal. **El smoke lo atrapó** con el chequeo a través del front.
+- **PROD corría un commit no aprobado**: Auto-Deploy prendido. Lo apagué en los cuatro servicios.
+- **No había endpoint público que tocara la base**: agregué `/api/health/db`, aparte de
+  `/api/health` para que el `HEALTHCHECK` no despierte a Neon cada 10 s.
 
 ### Uso de IA — TP6
 
-**Qué se hizo con asistencia de IA (Claude Code).** La lectura del enunciado y su mapeo a
-este stack (Express + Prisma + Next.js en lugar de .NET + nginx), los cambios del `ci.yml`
-(publicación y jobs de deploy), los endpoints de salud, el diagnóstico del 404 del proxy,
-la creación de los environments por la API de GitHub, los commits y Pull Requests, y la
-redacción de esta sección.
-
-**Qué se hizo a mano.** Las cuentas y la configuración de Neon y Render (las dos bases, los
-cuatro servicios, sus variables y el Auto-Deploy apagado), la carga de los deploy hooks
-como secrets, la decisión de aprobar y de rechazar cada deploy —con el motivo escrito por
-mí—, la prueba de las bases separadas y el cronometraje del rollback.
-
-**Cómo se verificó.**
-
-- El orden de los pasos, leyendo la lista de pasos de la corrida de `main` por la API:
-  «Construir y publicar la imagen» es el último.
-- Que el PR no publique: en su corrida «Entrar al registry» figura `skipped`.
-- Que los paquetes sean públicos, pidiéndole al registry el manifest de las dos imágenes
-  con un token anónimo: 200.
-- Que el deploy lleve el commit verificado, leyendo `/api/health` de QA y PROD y
-  comparándolo con el SHA del merge.
-- Que el front de cada entorno hable con **su** API, pidiendo `/api/health` a través de
-  cada front.
-- El diagnóstico del 404, reproduciendo el front en local con el mismo `BACKEND_URL`
-  antes de tocar código: el código no cambió, porque no era el problema.
-
-**Lo que tengo que poder explicar sin mirar el archivo**, qué pasa entre el merge y PROD:
-el push a `main` corre los dos builds (tests, cobertura, publicación de la imagen); si los
-dos dan verde arranca `deploy-qa`, que lee los hooks de QA de su environment, los llama con
-`&ref=<sha>`, y espera hasta 15 min a que la API de QA informe ese SHA, la base conteste y
-el front llegue a la API; si pasa, `deploy-prod` queda en *Waiting for review* sin poder
-leer todavía los secrets de PROD; cuando apruebo, recién ahí los lee, dispara los hooks de
-PROD con el mismo SHA y corre el mismo smoke contra PROD.
+**Con IA (Claude Code)**: el mapeo a este stack, el `ci.yml`, los endpoints de salud, el
+diagnóstico del 404, los environments, los PRs y la redacción. **A mano**: Neon y Render (bases,
+servicios, variables, Auto-Deploy en Off), los hooks como secrets, aprobar y rechazar con mi
+motivo, la prueba de las bases y el cronometraje del rollback. **Verificado**: el orden de los
+pasos en la corrida de `main`, el registry `skipped` en un PR, los paquetes públicos (manifest con
+token anónimo) y el commit de cada entorno en `/api/health`, directo y a través del front.
 
 ---
 
 ## TP7 — Contenedores en el pipeline + integración y e2e
 
-Del TP6 llegaba media cadena: el pipeline publicaba la imagen etiquetada con el commit,
-pero Render la **reconstruía** desde el repositorio para desplegarla. Este TP cierra ese
-hueco y le agrega dos pruebas contra el entorno desplegado que deciden si esa misma imagen
-puede llegar a PROD:
+Cierra el hueco del TP6 (Render reconstruía) y agrega dos pruebas contra QA que deciden la
+promoción:
 
 ```
 build (tests + publica sha-<commit>) → deploy-qa → integracion → e2e → ⏸ aprobación → deploy-prod
 ```
 
-> **Un solo Dockerfile o dos:** son dos (backend y frontend), así que son **cuatro**
-> servicios image-backed —api y front, en QA y en PROD— y dos paquetes. `API_BASE_URL` y
-> `E2E_BASE_URL` son distintas: la api y el front son dos servicios con dos URLs.
+Son dos Dockerfiles: **cuatro** servicios *Existing Image* y dos paquetes. `API_BASE_URL` y
+`E2E_BASE_URL` son distintas porque api y front tienen URLs distintas.
 
-### Build once, deploy many: qué problema del TP6 resuelve
+### Build once, deploy many
 
-En el TP6 promovía **el mismo commit, no la misma imagen**: el pipeline construía y
-probaba una imagen, y Render construía otra (cuatro veces: api y front, en QA y en PROD)
-desde el mismo código. El lockfile fija las dependencias de npm, pero no todo lo que entra
-a una imagen. En mi app hay tres cosas concretas que pueden salir distintas entre dos builds
-del mismo commit: la base `node:20-alpine` (es una etiqueta que se mueve: hoy apunta a una
-versión de Node y de Alpine, mañana a otra), el `apk add openssl` (baja la versión que haya
-ese día en el repositorio de Alpine) y el motor nativo de Prisma, que se elige **según la
-versión de OpenSSL que detecta**. Si entre el build de QA y el de PROD Alpine sube OpenSSL,
-PROD puede quedar con otro motor de Prisma que QA nunca ejecutó: «el mismo código» y un
-error que sólo pasa en PROD. Es el escenario del enunciado con nombre propio.
+En el TP6 dos builds del mismo commit podían salir distintos. Ejemplo de mi app: el motor de
+Prisma se elige **según la versión de OpenSSL** que baja `apk add openssl` ese día; si Alpine la
+sube entre el build de QA y el de PROD, PROD corre un motor que QA nunca probó. Ahora la imagen
+se construye **una vez** y QA, las suites y PROD usan esa misma imagen.
 
-Ahora la imagen se construye **una vez**, en `build-*`, después de que pasan los tests, y
-lo que corre en QA, lo que prueban las dos suites y lo que llega a PROD es esa imagen, bit
-a bit. Render dejó de construir: baja la imagen del registry y la ejecuta.
+### Las etiquetas
 
-### Las etiquetas: qué garantiza cada una
+- **`sha-<commit>`** (registry): de qué código salió. Es la única que publica el pipeline.
+- **`v7.0.0`** (git): nombre humano sobre **el commit que está en PROD** según *Deployments*.
+  Del tag a la imagen: `git rev-list -n1 v7.0.0` → `…:sha-<ese commit>`.
+- **Sin `latest`**: no dice qué hay detrás, y dos deploys de `latest` pueden correr cosas
+  distintas. Las etiquetas son mutables; la garantía completa sería desplegar por **digest**.
 
-- **`sha-<commit>` en el registry** (los 40 caracteres): dice de **qué código** salió la
-  imagen. Es la única etiqueta que publica el pipeline, y es la que manda cada deploy. Se
-  publica sólo desde `main` y sólo si los tests pasaron (el push es el último paso del job).
-- **`v7.0.0` en git**: es un **nombre humano** para una versión que anduvo en PROD. No vive
-  en el registry: es un tag de git sobre el commit que *Deployments* dice que está en
-  producción. Del tag se llega a la imagen por el commit (abajo).
-- **Por qué no publico `latest`**: porque no dice qué hay detrás. Un deploy que nombrara
-  `latest` ejecutaría «lo último que se publicó», haya pasado las e2e o no; y dos deploys
-  de `latest` en momentos distintos pueden ejecutar cosas distintas sin que nada lo
-  muestre. Con una sola etiqueta por imagen, la de su commit, no hay forma de desplegar
-  algo sin decir exactamente qué es.
-- **Si alguien moviera un tag a mano** (volviera a empujar otra imagen con la misma
-  etiqueta `sha-…`, por ejemplo re-corriendo la corrida de ese commit): la etiqueta seguiría
-  diciendo el mismo commit, pero el contenido ya no sería el que se probó. Las etiquetas de
-  un registry **son mutables**; lo que no se mueve es el **digest** (`@sha256:…`), la huella
-  del contenido. La garantía completa sería mandarle al hook el digest en vez de la
-  etiqueta. No lo hago porque mi pipeline nunca vuelve a publicar una etiqueta existente
-  salvo que se re-corra una corrida vieja, y eso queda a la vista en *Actions*.
+**Render** quedó configurado con `…:sha-a134ff6…` (el último merge del TP6), pero cambiar la
+fuente no despliega: lo que corre lo nombra cada deploy con `imgURL`, y lo leo en `/api/health`.
+Por eso no se usa *Manual Deploy* (desplegaría la imagen vieja). No creé servicios nuevos: les
+cambié la fuente a los cuatro, y conservé URLs, variables y hooks.
 
-**Con qué imagen configuré los servicios de Render, y por qué no es ésa la que corre.** A
-los cuatro les cambié la fuente a *Existing Image* con la imagen del último merge del TP6,
-`…:sha-a134ff6c8a746e9bb15cf7ee5c1fc5d2b3ca014d` (`-backend` en las apis, `-frontend` en
-los fronts). Render pide una imagen para cambiar la fuente, y ésa era una que ya había
-comprobado que existía y era pública. Pero **cambiar la fuente no despliega nada**, y lo
-que corre en cada entorno lo nombra después cada deploy de mi pipeline con su `imgURL`:
-Render sólo exige que coincidan el registry y el nombre de la imagen, la etiqueta puede ser
-otra. Hoy *Settings* sigue diciendo `sha-a134ff6…` y los servicios corren otra cosa. Lo sé
-sin entrar al panel: `/api/health` de QA y de PROD informa el commit que corre.
+### Cómo se comprueba que el entorno EJECUTA la imagen
 
-Por eso **no se toca *Manual Deploy***: ese botón despliega la imagen de *Settings*, no la
-que está corriendo, y llevaría el entorno de vuelta al TP6 en verde y sin avisar.
+En los *Events* de Render («Triggered via Deploy Hook» con la imagen `sha-…`, lo muestro en
+vivo); en el log, el mismo `imgURL` en `deploy-qa` y `deploy-prod`; y `/api/health`, que devuelve
+el `APP_COMMIT` **horneado en la imagen** (un servicio *Existing Image* no tiene otro de dónde
+sacarlo). El smoke espera ese commit, pero **no prueba que la app funcione**: en la corrida roja
+dio verde con el alta rota.
 
-**No creé servicios nuevos**: les cambié la fuente a los cuatro que ya tenía. Así se
-conservaron las URLs, las variables (las connection strings de Neon de cada entorno), los
-deploy hooks cargados como secrets y el historial de *Events*. No hubo servicios viejos que
-borrar.
+### Qué pruebo en cada suite
 
-### De la release a la imagen, en un paso
+El dato único es el **turno** (cancha + fecha + hora): `turnoUnico()` lo arma con la hora actual.
+Para poder limpiar agregué `DELETE /api/reservas/:id` y un botón de borrar.
 
-```bash
-git rev-list -n1 v7.0.0        # → el commit
-# y la imagen de ese commit es  ghcr.io/franzago1/ingsoft3-tp01-{backend,frontend}:sha-<ese commit>
-```
+**Integración** (`e2e/api.spec.js`, sin navegador, contra la api de QA):
 
-El tag da el commit, y el pipeline ya publicó las dos imágenes de ese commit con su nombre.
-Volver a esa versión es mandarle esa imagen al hook: el mismo mecanismo del deploy, sin
-construir nada.
-
-### Cómo se comprueba, desde afuera, que el entorno EJECUTA la imagen
-
-Tres miradas, de la más fuerte a la más débil:
-
-1. **En los *Events* de cada servicio de Render**: el deploy dice «Triggered via Deploy
-   Hook» y nombra la imagen `…:sha-<commit>` de esa corrida. Es la única que no es pública:
-   la muestro en vivo en la defensa.
-2. **En el log del job de deploy**: el `imgURL` con el `sha-<commit>` de la corrida, el
-   mismo en `deploy-qa` y en `deploy-prod`, y la respuesta del hook `{"deploy":{"id":…}}`.
-3. **En `/api/health` de la api**: devuelve el commit que corre. Esto ya venía del TP6, y en
-   este TP **cambió de significado**. En el TP6 lo ponía Render en `RENDER_GIT_COMMIT` (el
-   commit que construyó). Ahora un servicio *Existing Image* no tiene commit de git, así que
-   lo que informa es el `APP_COMMIT` que el pipeline **horneó adentro de la imagen** como
-   build-arg. Si `/api/health` dice el commit de la corrida, es porque está ejecutando la
-   imagen que se construyó en esa corrida: Render no tiene de dónde sacar ese valor si no.
-
-**Y el smoke de mi pipeline lo compara**: no se conforma con un 200, reintenta hasta que
-`/api/health` informa el SHA de la corrida. Es el concepto de §2.4 (que el endpoint de vida
-devuelva la versión y el smoke la compare), que la guía no pide implementar y que en mi
-cadena venía del TP6.
-
-**Lo que el smoke NO prueba.** Que la app **funcione**: prueba que la api, la base y el
-front contestan, y que la api es la versión correcta. Del front sólo sé que contesta y que
-llega a su api, no qué imagen corre (eso lo miro en *Events*). Y no sabe si un usuario
-puede reservar: en la corrida roja el smoke dio verde con el alta rota. El sistema
-respondía y aun así estaba roto; eso es lo que ven las e2e.
-
-### Qué pruebo en cada suite, y por qué ésas
-
-Las reservas no tienen título: lo que identifica a una reserva es **cancha + fecha +
-hora**. Así que el «nombre que no se repite» de cada test es el **turno**: lo fabrica
-`turnoUnico()` (`frontend/e2e/datos.js`) con la hora adentro —los segundos desde 1970 eligen
-un día entre 1 y 11 años desde hoy, y una hora entre 08 y 21—, así nunca es pasado, no
-choca con reservas reales y dos corridas tendrían que arrancar en el mismo segundo para
-pedir el mismo. Las suites entran con el jugador del seed, que existe en todo entorno
-porque el seed corre en cada arranque del contenedor.
-
-Para que los tests pudieran **borrar** lo que crean, la app necesitaba algo que no tenía:
-`DELETE /api/reservas/:id` (sólo el dueño o un admin) y un botón «Borrar reserva» en el
-detalle. Cancelar no alcanzaba: una reserva cancelada sigue en la base.
-
-**Integración** (`e2e/api.spec.js`, fixture `request`, sin navegador, contra la api de QA):
-
-1. **Alta + verificación + borrado**: `POST` → 201; `GET /api/reservas/:id` y la lista del
-   día la encuentran; `DELETE` → 204; `GET` → 404 y la lista ya no la tiene.
-2. **Alta inválida**: sin cancha → 400 «Faltan datos», y ese día el jugador no tiene ninguna
-   reserva: no se guardó nada.
-3. **La que elegí: cancelar libera el turno.** Una reserva activa bloquea el turno (el
-   segundo `POST` da 422 «se superpone»); cancelada, el mismo turno se puede volver a
-   reservar. Por qué ésta: la regla del solapamiento vive en **una consulta a Postgres** (las
-   reservas de esa cancha entre las 00:00 y las 24:00 de ese día, y el filtro de canceladas)
-   y ahí es donde un unitario con doble no ve nada: el doble devuelve lo que le digo. Si se
-   rompe, escribe el jugador al que la app le dice «ocupado» con la cancha vacía, y el club
-   que pierde el turno.
+1. **Alta + verificación + borrado**: `POST` 201 → `GET` la encuentra → `DELETE` 204 → `GET` 404.
+2. **Alta inválida**: sin cancha → 400, y el jugador no tiene ninguna reserva ese día.
+3. **Cancelar libera el turno** (elegida): activa bloquea con 422; cancelada, se vuelve a
+   reservar. La regla vive en **una consulta a Postgres**, donde un doble no ve nada.
 
 **e2e** (`e2e/reservas.spec.js`, Chromium contra el front de QA):
 
-1. **Creación**: reservar un turno desde el formulario → el detalle muestra su horario → la
-   lista «Mis reservas» lo tiene → borrarlo → la lista ya no lo tiene.
-2. **Error**: un turno ocupado (otra reserva creada antes por la api) → el usuario ve el
-   error del backend («…se superpone…») y se queda en el formulario → en su lista ese turno
-   aparece una sola vez.
-3. **El de todos los días: cancelar mi reserva.** El jugador que no puede ir y cancela.
-   Crear → «Cancelar» → el detalle dice `cancelada` y el botón desaparece → la lista (que lo
-   lee de la base, no del estado de la pantalla) también → borrar. Por qué ése y no el
-   login: los dos se usan a diario, y la regla de la guía es «si dudás, el que toca la base».
-   Si mañana no anda, escribe el jugador (no puede liberar la cancha) y el club (la cancha
-   figura ocupada y nadie la usa). El login, igual, lo recorren los tres flujos al entrar.
+1. **Creación**: reservar → verlo en el detalle y en «Mis reservas» → borrar → ya no está.
+2. **Error**: turno ocupado → el usuario ve «…se superpone…» → aparece una sola vez en su lista.
+3. **Cancelar mi reserva** (elegida, el uso diario): crear → cancelar → `cancelada` en el detalle
+   y en la lista → borrar. Sobre el login porque toca la base.
 
-Cada flujo **interactúa** (llena, elige, clickea), **afirma sobre su propio turno** (no
-«la página es visible») y **limpia comprobándolo**. Busca como una persona: `getByLabel`
-y `getByRole`. Para eso tuve que arreglar la app: los campos del login no tenían nombre
-accesible (sólo placeholder) y los mensajes de error no tenían `role="alert"`. El test me
-señaló dos problemas de accesibilidad.
+Cada test afirma **sobre su propio turno** y limpia comprobándolo. Buscar por
+`getByLabel`/`getByRole` me obligó a arreglar accesibilidad (labels y `role="alert"`).
 
-**Qué NO puse, y por qué (la pirámide).**
+**Qué no puse (pirámide)**: en e2e, las reglas de horario y estados (ya las cubren los unitarios
+en milisegundos); en integración, los mensajes de cada validación y el 403 (mapeo HTTP ya probado
+con dobles). Sólo la e2e prueba la traducción entre pantalla y api.
 
-- En **e2e** no puse las reglas de horario (duración 60–120 min, 08 a 23, no en el pasado),
-  las transiciones de estado ni la regla de las 2 horas: son lógica pura y ya las prueban
-  los unitarios del TP5 en milisegundos y sin red. Tampoco el panel del admin ni el filtro
-  de la lista. Una e2e por regla sería lenta, frágil y diría lo mismo que un unitario.
-- En **integración** no puse los mensajes de cada validación ni el 403 de reservas ajenas:
-  son el mapeo de un resultado a un código HTTP, que el servicio ya prueba con dobles. Puse
-  lo que **necesita la base** para ser verdad.
-- Y la **traducción entre pantalla y api** (qué campos manda el front, qué muestra con la
-  respuesta) no la prueba ningún unitario: ésa es la parte de la pirámide que es sólo de
-  la e2e.
+### El par verde/rojo de mi rotura
 
-### Integración y e2e no son lo mismo: el par verde/rojo de mi rotura
+La integración usa la api **directo**; la e2e, **a través del front**. Verde + rojo = el front
+usa mal la api.
 
-La integración le habla **a la api directamente**, con el contrato correcto. La e2e usa la
-api **a través del front**, como un usuario. Si la integración da verde, la api y su base
-están sanas; si además la e2e da rojo, el que usa mal la api es el front.
+**Rotura** ([PR #31](https://github.com/FranZago1/ingsoft3-tp01/pull/31), sin tocar `e2e/`): el
+formulario manda `cancha` en vez de `canchaId`. Unitarios ✅, smoke ✅, integración ✅,
+**e2e ❌**, `deploy-prod` no arrancó. **Se rompió el front**, y lo confirmé con el reporte: la
+captura muestra «Faltan datos: canchaId…» y la traza, el `POST` con `{"cancha": …}` y un 400. Si
+hubiera roto la api, la integración daba rojo y la e2e ni corría.
 
-**Mi rotura** (PR #31, sin tocar `e2e/`): el formulario de nueva reserva pasó a mandar
-`cancha` en vez de `canchaId`. Compila, y los 66 unitarios del front pasan, porque ninguno
-mira el body que arma la página (los unitarios del front prueban `src/lib`, no las
-pantallas). En la corrida 37701015542:
+**El gate no ataja**: lo que las pruebas no recorren (admin, filtro, registro), datos o
+configuración propios de PROD, concurrencia y carga, y bugs de zona horaria.
 
-| Capa | Resultado | Qué dice |
-| --- | --- | --- |
-| Unitarios (`build-*`) | ✅ | la lógica está bien |
-| Smoke (`deploy-qa`) | ✅ | QA responde y corre ese commit |
-| Integración | ✅ 3 passed | la api y la base aceptan, guardan y borran con el contrato correcto |
-| e2e | ❌ 3 failed | un usuario no puede reservar |
-| `deploy-prod` | salteado | no llegó ni a pedirme aprobación |
+### Integración amplia y no estrecha
 
-**Quién se rompió, sin abrir el código: el front.** La api estaba sana —acababan de crear y
-borrar reservas contra ella— y lo único que la e2e hace distinto es pasar por la pantalla.
-Después lo **confirmé con el reporte rojo**, no con el código: la captura muestra el
-formulario con el alert «Faltan datos: canchaId, fecha, horaInicio, horaFin.», y en la traza
-(*Network*) el `POST /api/reservas` que mandó el navegador lleva `{"cancha": "…", …}` y
-recibe un 400.
+Contra la api de QA desplegada, no levantando la api y un Postgres en el job. **Gano**: prueba la
+imagen que va a PROD, con la base, red y variables de verdad. **Pierdo**: llega tarde (después del
+deploy), depende de que QA esté vivo y comparte la base. La elegí porque el problema es «en QA
+anda, en PROD no», que la estrecha no ve.
 
-**Si hubiera roto la api** (por ejemplo, que el servicio guardara una fecha que Postgres
-rechaza), la integración se habría puesto roja y la e2e **no habría corrido**: su `needs:`
-no se cumple. También es información: «se rompió la api», sin gastar un navegador en
-confirmarlo.
+### Cold start y tests flaky
 
-**Lo que no pasó gracias al gate:** el formulario roto no llegó a PROD. Sin las e2e, el
-smoke verde me habría pedido aprobación, yo habría aprobado mirando un pipeline verde, y
-desde ese deploy nadie habría podido reservar en producción hasta que alguien avisara.
-
-**Qué clase de bug mi gate NO ataja**: lo que las seis pruebas no recorren (el panel del
-admin, el filtro de la lista, el registro); lo que sólo pasa en PROD por **datos o
-configuración** (la base de PROD con otros datos, una variable mal puesta en PROD: QA
-prueba la imagen, no la configuración de PROD); problemas de carga o concurrencia (dos
-usuarios pidiendo el mismo turno en el mismo milisegundo); y el **horario**, que mis
-pruebas corren en UTC como los contenedores (ver «Problemas»).
-
-### Por qué mi integración es la amplia y no la estrecha
-
-**Amplia**: contra la api de QA ya desplegada, la imagen exacta de esta corrida con la base
-de Neon de QA. **Estrecha** habría sido levantar la api dentro del job (con `createApp()`,
-que ya está separado de `listen` justamente para eso, más un Postgres como `services:`)
-contra una base descartable.
-
-- **Lo que gano**: prueba la imagen **que va a ir a PROD** (no otra construcción), con la
-  base de verdad (el Postgres de Neon, no uno que armé yo), con su red, su TLS y sus
-  variables. Y casi no cuesta configuración: QA ya existía.
-- **Lo que pierdo**: llega **tarde** —después del build y del deploy, no en el PR—, así que
-  un error de la api se descubre con la imagen ya publicada. Depende de que QA esté vivo
-  (un QA caído pone rojo un test que no tiene la culpa). Y **comparte la base** con todas
-  las corridas, así que cada test tiene que fabricar su dato único y limpiar.
-- La estrecha tendría lo contrario: correría en cada PR, en segundos, aislada; pero contra
-  una base que no es la de QA y una api que no es la imagen publicada.
-
-Elegí la amplia porque el problema del escenario es exactamente el que la estrecha no ve:
-«en QA anda, en PROD no».
-
-### Cold start, timeouts, retries y tests flaky
-
-El free tier de Render duerme los servicios a los 15 minutos sin tráfico, y el primer
-pedido tarda hasta un minuto. Cómo lo manejo, **sin un solo sleep en los specs**:
-
-- **El smoke de `deploy-qa` despierta QA antes de las pruebas**: no termina hasta que la
-  api, la base y el front contestan. Las suites arrancan contra un QA despierto.
-- **Timeouts generosos** (`playwright.config.js`): 60 s por test y 15 s por aserción. Cada
-  `expect` reintenta solo hasta su tope, así que «esperar a que aparezca» no necesita
-  sleeps: si aparece en 2 s, sigue en 2 s.
-- **`retries: 1`**: absorbe una demora suelta de la red. Si falla las dos veces, queda rojo.
-- **`workers: 1`**: los tests corren en serie, porque comparten la base de QA y el usuario
-  jugador.
-
-**Un test flaky** es uno que, con el mismo código, a veces pasa y a veces falla. Es peor
-que no tener test porque **entrena a ignorar el rojo**: si «a veces falla», el día que
-falla de verdad alguien re-corre hasta que pase. El retry no lo esconde: un test que pasa
-recién en el retry aparece como *flaky* en el reporte, con la corrida verde. Por eso miro
-el reporte aunque esté verde. Un flaky suelto puede ser la red; el mismo test flaky dos
-corridas seguidas es el test, y se arregla. Lo que hice para no fabricarlos: nada de sleeps
-fijos, datos únicos por test (ningún test depende de lo que dejó otro) y aserciones que
-esperan el dato concreto y no «que cargue la página». En las corridas de este TP no hubo
-ningún flaky.
-
-### La misma imagen del front en QA y en PROD
-
-Ya venía resuelto desde el TP2 y en este TP se volvió requisito: el front lee
-`BACKEND_URL` **en cada pedido**, en el middleware que hace de proxy de `/api/*`, y no en
-el build. Por eso la misma imagen `-frontend:sha-…` corre en QA y en PROD, y lo único que
-las distingue es la variable de cada servicio de Render (la api de su entorno). En el back
-pasa lo mismo con `DATABASE_URL` y `JWT_SECRET`. **Adentro de la imagen** queda lo que es
-igual en todos los entornos: el código compilado, las dependencias, el motor de Prisma y el
-commit (`APP_COMMIT`). Afuera queda lo que cambia por entorno y los secretos: una imagen
-pública la puede bajar cualquiera, así que no lleva ninguna contraseña.
-
-### Quién escribe en el registry
-
-Sólo el pipeline, con el `GITHUB_TOKEN` de la corrida (`packages: write` declarado en los
-dos jobs de build, nada más). Es un token que GitHub genera para cada corrida y que vence
-cuando termina: no hay ningún token mío en el YAML ni en los secrets. Render no necesita
-credencial porque los paquetes son públicos.
+Sin sleeps: el smoke despierta QA antes de las suites, timeouts de 60 s por test y 15 s por
+aserción, `retries: 1` y `workers: 1` (comparten base). Un **flaky** pasa o falla con el mismo
+código, y **entrena a ignorar el rojo**; el retry no lo esconde, porque el reporte lo marca.
 
 ### Límite conocido: QA es uno solo
 
-Las dos suites usan QA durante un par de minutos después de cada deploy. Si mergeo dos PRs
-seguidos, la corrida B puede redesplegar QA mientras la integración o la e2e de A lo están
-usando: un rojo de A que no es de su código, o algo peor, un verde de A que en parte probó
-la imagen de B.
-
-- **Cómo lo reconocería**: mirando en *Events* de QA a qué hora entró la imagen de B y
-  comparándola con la hora de los jobs de A en *Actions*. Si se pisan, el resultado de A no
-  vale.
-- **Qué haría**: rechazar la corrida A con el motivo (si su e2e quedó roja, ni llega a
-  pedir aprobación) y quedarme con B, que trae los dos cambios y sí probó lo que dice. No
-  re-correría los jobs de A: QA ya tiene la imagen de B. El `concurrency` no lo resuelve:
-  cancela lo que está en cola, no un job esperando aprobación.
-- **Mi regla**: un merge por vez mientras la cadena corre. En este TP mergeé cada PR
-  después de que la corrida anterior terminara, incluida su aprobación.
-- **Cómo lo resuelve un equipo real**: un entorno efímero por corrida, que nace con ella y
-  se destruye al terminar.
-
-Hay otra forma de ensuciar QA: que un test falle a mitad de camino y no llegue a borrar. Por
-eso la limpieza de los tests que crean más de una reserva va en un `finally`, y cada test
-usa un turno de un día distinto: aunque quede basura, no le cambia el resultado a la
-corrida siguiente. Me daría cuenta mirando «Mis reservas» del jugador en QA: no debería
-tener nada salvo la reserva de ejemplo del seed.
-
-### Si mañana cambio Render por otro proveedor
-
-Sobrevive casi todo, porque casi nada de esto es de Render: las imágenes en ghcr y sus
-etiquetas, el pipeline que las construye una vez, las dos suites (sólo leen dos URLs por
-variable de entorno), el gate de `needs:`, el reviewer de `production`, el smoke que
-compara el commit y la release. Lo único de Render son los dos pasos de deploy: el `curl`
-al hook con `imgURL`. Con otro proveedor se cambia ese paso por su forma de decir «ejecutá
-esta imagen».
+Dos merges seguidos: la corrida B puede redesplegar QA mientras las suites de A lo usan. Lo
+reconozco comparando la hora de *Events* de QA con la de los jobs de A; rechazo A y me quedo con
+B. Mi regla: un merge por vez. En un equipo real, un entorno efímero por corrida. Si un test falla
+a mitad, la limpieza va en un `finally`.
 
 ### Problemas encontrados
 
-**a) Docker Desktop sin red.** El `docker pull` del checkpoint (y después el
-`docker compose up --build`) se quedaba colgado: el daemon respondía, pero cualquier pull,
-incluso `alpine`, no avanzaba. Para no frenar el TP, comprobé que los paquetes fueran
-públicos pidiéndole al registry el manifest de las dos imágenes con un token anónimo
-(200), y probé las suites localmente sin Docker: un Postgres de Homebrew en un directorio
-temporal, `prisma migrate deploy` + seed, y la api y el front con Node. Lo que se prueba
-es lo mismo (api de verdad, base de verdad); lo que cambia es que no es la imagen.
-
-**b) La hora del front y la del back.** En una de esas pruebas locales las e2e fallaron con
-la app sana: la lista mostraba el turno tres horas antes. Había levantado la api en UTC y
-el front sin `TZ`, o sea en la hora de Argentina. La app trabaja en hora local (ya está
-documentado en «La app trabaja en hora local») y el front formatea las fechas en el
-servidor: si el front y la api están en zonas distintas, la misma reserva se muestra
-corrida. En Render los dos contenedores corren en UTC, así que no pasa; localmente los
-levanté a los dos con `TZ=UTC`. Es un bug latente de la app que mis pruebas **no**
-atajarían, porque corren en la misma zona que los contenedores.
-
-**c) Un regex que esperaba de más.** Al probar la rotura antes de hacerla en el pipeline,
-un test tardaba un minuto entero en fallar: la aserción «estoy en el detalle»
-(`/reservas/<id>`) también aceptaba `/reservas/nueva`, así que pasaba en el formulario y el
-test se quedaba esperando un botón que no existía. Lo cambié por
-`/\/reservas\/(?!nueva$)[^/]+$/` y la falla pasó a decir lo que de verdad pasaba: «sigo en
-`/reservas/nueva`».
-
-**d) `$s:sha` en zsh.** En el loop del `docker pull`, `…-$s:sha-$SHA` daba
-`bad substitution`: en zsh, `:s` después de una variable es un modificador de sustitución.
-Se resuelve con llaves: `${s}:sha-${SHA}`.
-
-**e) La app no tenía cómo borrar.** Las pruebas tienen que dejar la base como la
-encontraron, y la api sólo sabía cancelar. Agregué `DELETE /api/reservas/:id` (con la misma
-regla de acceso que el resto: dueño o admin) y el botón en el detalle, en el mismo PR que
-las suites, así la imagen que las suites prueban ya lo trae.
+- **Docker Desktop sin red**: probé las suites en local sin Docker (Postgres de Homebrew + Node)
+  y la publicidad de los paquetes con el manifest.
+- **Hora del front y del back**: en local, api en UTC y front en hora argentina mostraban el
+  turno 3 h corrido. En Render los dos están en UTC; queda como **bug latente** que mis pruebas no
+  atajan.
 
 ### Uso de IA — TP7
 
-**Qué se hizo con asistencia de IA (Claude Code).** La lectura del enunciado y su mapeo a
-este stack, el cambio de los hooks de `&ref=` a `imgURL`, el endpoint `DELETE` y el botón
-de borrar, los arreglos de accesibilidad, las dos suites de Playwright, los jobs
-`integracion` y `e2e` y el gate, la elección de la rotura (y su prueba local antes de
-mergearla), el diagnóstico con el reporte, los Pull Requests, la release y la redacción
-de esta sección.
-
-**Qué se hizo a mano.** El cambio de fuente de los cuatro servicios en el panel de Render
-(*Existing Image*) y las aprobaciones de cada deploy a PROD como required reviewer.
-
-**Cómo se verificó.**
-
-- Las seis pruebas en verde localmente, contra una api y una base de verdad, antes de
-  subirlas; y la rotura probada localmente antes del PR: unitarios verdes, integración
-  verde, e2e roja.
-- Que QA y PROD ejecuten la imagen: `/api/health` de cada entorno informa el commit de la
-  corrida (el `APP_COMMIT` horneado en la imagen), y en *Events* el deploy nombra la
-  etiqueta.
-- El diagnóstico de la corrida roja, con el reporte descargado: el alert de la captura y el
-  body del `POST` en la traza.
-- La release, con `git rev-list -n1 v7.0.0` contra el commit que informa *Deployments* para
-  `production`.
-
-**Lo que tengo que poder explicar sin mirar el archivo**: qué pasa entre el merge y PROD.
-El push a `main` corre los dos builds (tests, cobertura, y publica `sha-<commit>`); si
-pasan, `deploy-qa` le manda a cada hook de QA `imgURL` con esa imagen y espera a que la api
-informe ese commit; `integracion` le pega a la api de QA sin navegador; si pasa, `e2e`
-abre Chromium contra el front de QA; si pasa, `deploy-prod` queda esperando mi aprobación;
-cuando apruebo, le manda a los hooks de PROD **la misma** imagen y corre el mismo smoke.
-Si cualquiera de las suites da rojo, `deploy-prod` ni aparece como pendiente.
+**Con IA (Claude Code)**: `imgURL`, el `DELETE` y el botón, la accesibilidad, las dos suites, los
+jobs y el gate, la rotura y su diagnóstico, los PRs, la release y la redacción. **A mano**: el
+cambio de fuente en Render y las aprobaciones. **Verificado**: las seis pruebas y la rotura en
+local antes del pipeline, el commit en `/api/health` y en *Events*, el reporte descargado, y
+`git rev-list -n1 v7.0.0` contra *Deployments*.
 
 ---
 
 ## TP8 — Infraestructura como Código: el entorno `preprod`
 
 Un tercer entorno, `preprod`, declarado en `infra/` y creado desde cero: un proyecto de Neon
-propio (`reservapadel-preprod`, con el rol `app_preprod_owner` y la base `app_preprod`) y dos
-servicios free de Render (`reservapadel-api-preprod` y `reservapadel-front-preprod`) que
-corren la imagen del TP7. **QA y PROD no están declarados ni se tocaron**: siguen siendo los
-que clickeé en el TP6, y por eso no aparecen en ningún plan.
+propio (`reservapadel-preprod`, rol `app_preprod_owner`, base `app_preprod`) y dos servicios free
+de Render (`reservapadel-api-preprod` y `reservapadel-front-preprod`) con la imagen del TP7.
+**QA y PROD no están declarados ni se tocaron.**
 
 ### Riel y versiones
 
-Riel canónico: **Terraform 1.16.6** (tap oficial de HashiCorp) contra Neon y Render.
+**Terraform 1.16.6** contra Neon y Render.
 
 | Provider | Versión fijada | Para qué |
 | --- | --- | --- |
-| `kislerdm/neon` | `0.18.0` | proyecto, rol y base de preprod |
+| `kislerdm/neon` | `0.18.0` | proyecto, rol y base |
 | `render-oss/render` | `1.9.1` | los dos servicios |
 | `hashicorp/random` | `3.7.2` | el `JWT_SECRET` de preprod |
 
-El `.terraform.lock.hcl` va commiteado, con los hashes de mac, linux y windows
-(`terraform providers lock`), para que cualquier máquina o el CI bajen exactamente lo mismo.
-El estado vive en `infra/terraform.tfstate`, en mi máquina, y lo ignora el `.gitignore`
-junto con `.terraform/`, `*.tfvars` y los planes guardados (`tfplan`).
+El `.terraform.lock.hcl` va commiteado. El estado vive en mi máquina
+(`infra/terraform.tfstate`) y el `.gitignore` lo ignora junto con `.terraform/`, `*.tfvars` y los
+planes guardados.
 
-**Qué se deriva y qué no se escribe en ningún lado.**
+**Qué se deriva**:
 
-- `DATABASE_URL` de la api se **arma** en un `local` con el host de `neon_project`, el nombre
-  de `neon_database` y la contraseña que Neon generó para `neon_role` (pasada por
-  `urlencode`). Tiene el mismo formato que QA y PROD: URI, host directo (no `-pooler`, porque
-  `prisma migrate deploy` necesita una conexión de sesión) y `sslmode=require`.
-- `BACKEND_URL` del front sale de `render_web_service.api.url`, con `trimsuffix(…, "/")`.
-- `JWT_SECRET` lo genera `random_password`. La guía no lo pide porque la app de la cátedra no
-  tiene JWT; la mía no arranca sin él (`assertEnv()`), y prefiero que nadie lo invente.
-- `APP_COMMIT` **no** se declara: viene horneado en la imagen y una variable del servicio
-  lo pisaría (el `/api/health` dejaría de decir qué imagen corre).
-- Las claves (`NEON_API_KEY`, `RENDER_API_KEY`, `RENDER_OWNER_ID`) las leen los providers
-  del entorno. Las tengo en un `infra/.env` que hago `source` y que el `.gitignore` ya
-  cubría (`.env`).
-- La etiqueta de la imagen es fija en `variables.tf` (`sha-4b4f062…`, el último merge con CI
-  verde). Para cambiarla: PR que edita la línea y `terraform apply -replace=…`, porque en
-  plan free Render no deja actualizar un servicio.
+- `DATABASE_URL` se **arma** en un `local` con el host de `neon_project`, el nombre de
+  `neon_database` y la contraseña de `neon_role` (con `urlencode`), host directo y
+  `sslmode=require`.
+- `BACKEND_URL` del front sale de `render_web_service.api.url`.
+- `JWT_SECRET` lo genera `random_password` (mi app no arranca sin él).
+- `APP_COMMIT` **no** se declara: viene en la imagen y una variable lo pisaría.
+- Las claves (`NEON_API_KEY`, `RENDER_API_KEY`, `RENDER_OWNER_ID`) las leen los providers del
+  entorno, desde un `infra/.env` ignorado.
+- La etiqueta de la imagen es fija en `variables.tf` (`sha-4b4f062…`).
 
-**Cómo compruebo que es un entorno y no seis recursos**: `/api/health` (la api vive y dice
-el commit), `/api/health/db` (cuenta las canchas: la migración y el seed corrieron contra
-**su** base), `/login` del front con 200, y `/api/health/db` **a través del front** (llega a
-su api). En la API de Render, `BACKEND_URL` del front es
-`https://reservapadel-api-preprod.onrender.com`.
+**Entorno y no seis recursos**: `/api/health`, `/api/health/db` (la migración y el seed corrieron
+contra **su** base), `/login` del front, y `/api/health/db` **a través del front**.
 
 ### Lo que medí
 
-- **Crear**: 6 recursos en ~19 s; el servicio tarda unos minutos más en levantar la imagen.
+- **Crear**: 6 recursos en ~19 s (el servicio tarda unos minutos más en levantar).
 - **Idempotencia**: el segundo `plan` dice «No changes».
-- **Estado**: `"password"` aparece en `terraform.tfstate`, en texto plano.
-- **Drift**: borré `app_preprod` por fuera de Terraform (API de Neon) → el plan dijo
-  `neon_database.preprod will be created` · `Plan: 1 to add` → el `apply` la recreó. Después
-  creé `base_intrusa` a mano → el plan dijo «No changes». La borré a mano.
-- **`prevent_destroy`** en `neon_database.preprod`: el `destroy` se negó con
-  «Instance cannot be destroyed» nombrando el recurso. Lo saqué después.
+- **Estado**: la contraseña está en `terraform.tfstate` en texto plano (por eso no va al repo).
+- **Drift**: borré `app_preprod` por fuera → el plan dijo `Plan: 1 to add` → el `apply` la
+  recreó. Una base creada a mano que el código no declara → el plan no la ve.
+- **`prevent_destroy`**: el `destroy` se negó («Instance cannot be destroyed»).
 - **Orden del destroy**: front → api → (jwt) → base → rol → proyecto, el grafo al revés.
-- **Recrear vuelve la misma URL**: después de tres ciclos `destroy → apply`, Render devolvió
-  siempre `reservapadel-api-preprod.onrender.com` y `reservapadel-front-preprod.onrender.com`,
-  sin sufijo (la guía lo deja como no medido).
-- **QA y PROD intactos**: antes y después, los dos informan el commit `4b4f062` y la misma
-  cantidad de canchas (3 y 4). Los cuatro servicios y el proyecto `ReservaPadel` de Neon
-  siguen ahí.
+- **QA y PROD intactos**: mismo commit y misma cantidad de canchas antes y después.
 
-**Cuota**: con preprod vivo son **siete** servicios free en el workspace (los cuatro de la
-app, los dos de preprod y uno de otro proyecto mío), que comparten las 750 horas. Por eso
-preprod queda **destruido** cuando no lo uso, y llega destruido a la defensa.
+**Cuota**: con preprod vivo son siete servicios free compartiendo las 750 horas. Por eso preprod
+queda **destruido** cuando no lo uso.
 
 ### Problemas encontrados
 
-**a) El `RENDER_OWNER_ID`.** No lo encontraba en el dashboard. Lo saqué de la API de Render
-(`GET /v1/owners` con la API key): es un `tea-…` (el workspace), no un `usr-…`.
-
-**b) El plan guardado tiene secretos.** Usé `terraform plan -out=tfplan` y el `tfplan` no
-estaba ignorado: es un binario con los valores del plan adentro, contraseñas incluidas. Lo
-borré antes de commitear y agregué `tfplan` y `*.tfplan` al `.gitignore`.
-
-**c) Un drift que no fue.** La primera vez que borré la base «a mano», el script sacó mal el
-id del proyecto: el `curl` no llegó a Neon y el plan dijo «No changes». Antes de concluir
-que Terraform no detectaba nada, revisé que la base siguiera ahí. La repetí con los ids
-correctos y el plan la detectó. Es el mismo error de método que cuenta la guía en §2.5.
-
-**d) Un `destroy` sin red.** En el primer intento de `prevent_destroy` falló el paso que
-editaba el archivo y el `destroy` corrió igual: se llevó preprod entero, sin la protección.
-No se perdió nada porque preprod es desechable. Lo recreé con un `apply` y repetí la prueba:
-esta vez se negó. Es justo la diferencia entre un entorno desechable y uno con datos.
+- **El `RENDER_OWNER_ID`**: lo saqué de la API de Render (`GET /v1/owners`): es un `tea-…`.
+- **El plan guardado tiene secretos**: el `tfplan` no estaba ignorado y lleva las contraseñas.
+  Lo borré y agregué `tfplan` y `*.tfplan` al `.gitignore`.
+- **Un `destroy` sin la protección**: falló el paso que agregaba `prevent_destroy` y el
+  `destroy` se llevó preprod. Lo recreé con `apply` y repetí la prueba. Es la diferencia entre un
+  entorno desechable y uno con datos.
 
 ### Uso de IA — TP8
 
-**Qué se hizo con asistencia de IA (Claude Code).** La lectura del enunciado y su mapeo a
-este stack (`DATABASE_URL` en URI y `JWT_SECRET`, en vez de la cadena de .NET), el HCL de
-`infra/`, la instalación de Terraform, las corridas de `plan`/`apply`/`destroy`, el drift y
-`prevent_destroy`, el Pull Request, la release y la redacción de esta sección.
+**Con asistencia de IA (Claude Code)**: el HCL de `infra/`, las corridas de
+`plan`/`apply`/`destroy`, el drift y `prevent_destroy`, el PR, la release y la redacción.
 
-**Qué se hizo a mano.** Generar las API keys de Neon y Render.
+**A mano**: generar las API keys de Neon y Render.
 
-**Cómo se verificó.** Leyendo cada plan antes de aplicarlo (`6 to add, 0 to change,
-0 to destroy`), con los cuatro chequeos de entorno de arriba después de cada `apply`, con
-la API de Render para ver el `BACKEND_URL` real del front, y comparando QA y PROD antes y
-después.
+**Cómo lo verifiqué**: leyendo cada plan antes de aplicarlo (`6 to add, 0 to change,
+0 to destroy`), con los cuatro chequeos de entorno después de cada `apply`, y comparando QA y
+PROD antes y después.
 
-**Lo que tengo que poder explicar sin mirar el archivo**: qué crea el plan y en qué orden
-(proyecto → rol → base → api → front, porque cada uno referencia al anterior), por qué la
-url de la api y el id del proyecto son `(known after apply)`, de dónde salen
-`DATABASE_URL` y `BACKEND_URL`, dónde vive el estado y por qué no está en el repo, y por
-qué se declaró un entorno nuevo en vez de importar QA y PROD.
+---
 
 ## TP9 — DevSecOps + Observabilidad + Continuous Feedback
 
-Las tres protecciones de GitHub están activas en *Settings → Advanced Security*: Dependabot
-(alertas + actualizaciones de seguridad, con `.github/dependabot.yml` para npm en `/backend`, npm
-en `/frontend` y github-actions en `/`), CodeQL en configuración por defecto, y secret scanning
-con push protection (ya venía prendido por ser un repo público). El monitor es UptimeRobot sobre
-`https://reservapadel-api-prod.onrender.com/api/health`. Sentry está en el back (`@sentry/node`) y
-en el front (`@sentry/react`), y la tarjeta que salió de sus datos es la #64.
+Activo en *Settings → Advanced Security*: **Dependabot** (alertas + actualizaciones de seguridad,
+`.github/dependabot.yml` para npm en `/backend`, npm en `/frontend` y github-actions), **CodeQL**
+por defecto y **push protection**. Monitor: **UptimeRobot** sobre
+`https://reservapadel-api-prod.onrender.com/api/health`. **Sentry** en el back (`@sentry/node`) y
+en el front. La tarjeta que salió de los datos es la **#64**.
 
 ### El PR de Dependabot que mergeé: #63
 
-`next` **15.5.23 → 15.5.27**, en `/frontend`. Me animé a mergearlo por tres razones:
+`next` **15.5.23 → 15.5.27** en `/frontend`. Me animé porque:
 
-- **Es un patch** (SemVer del TP6): no cambia ni el major ni el minor. El changelog no menciona
-  breaking changes.
-- **Es de seguridad**: la 15.5.27 corrige tres vulnerabilidades medias del App Router (cache
-  poisoning de páginas SSG/ISR y una fuga de información en las rutas de imágenes de metadata). En
-  el camino trae la 15.5.24, que corrigió dos ejecuciones remotas de código críticas.
-- **Su CI dio verde**: build, tests y coverage del front sobre la versión nueva. Después del merge,
-  la cadena completa (QA, integración, e2e en navegador) volvió a pasar antes de PROD.
+- **Es un patch**: el changelog no menciona breaking changes.
+- **Es de seguridad**: corrige tres vulnerabilidades medias del App Router, y en el camino trae la
+  15.5.24, que corrigió dos ejecuciones remotas de código críticas.
+- **Su CI dio verde** (build, tests y coverage), y después del merge la cadena completa (QA,
+  integración, e2e) volvió a pasar antes de PROD. Ese verde es todo el semestre diciendo «podés».
 
-Los que **no** mergeé dicen lo mismo desde el otro lado. Dependabot abrió 26 PRs en minutos y 8
-dieron rojo en el CI: TypeScript 7, Vitest 5, Tailwind 4, ESLint 10, React. Todos son saltos de
-major. El CI rojo es mi pipeline diciendo «esto rompe», y no los toco hasta tener tiempo de migrar.
+Los que **no** mergeé: de 26 PRs, 8 dieron rojo (TypeScript 7, Vitest 5, Tailwind 4, ESLint 10,
+React). Todos son majors: el CI rojo dice «esto rompe».
 
 ### Lo que midió el monitor, y lo que midió Sentry
 
-**La caída provocada** (hora local, UTC-3):
+**La caída provocada** (UTC−3):
 
 | Hora | Qué pasó |
 |---|---|
-| 18:02 | *Suspend* del api de PROD en Render |
-| 18:08 | Mail **DOWN** de UptimeRobot → **6 minutos** de detección |
-| 18:08 | *Resume* en Render |
-| 18:13 | Mail **UP** → 5 minutos desde que lo levanté |
+| 18:02 | *Suspend* de la api de PROD en Render |
+| 18:08 | Mail **DOWN** → **6 minutos** de detección |
+| 18:08 | *Resume* |
+| 18:13 | Mail **UP** |
 
-Con un chequeo cada 5 minutos, el peor caso de detección es de unos 10 (5 hasta el chequeo, más la
-confirmación). Sin monitor, me habría enterado cuando alguien intentara reservar y me avisara: el
-escenario del TP habla de 40 minutos un sábado. El monitor quedó **pausado**, porque despierto
-todo el mes se come casi todas las 750 horas gratis de Render.
+Con chequeo cada 5 min, el peor caso es ~10. Sin monitor me enteraba cuando un usuario avisara.
+El monitor quedó **pausado**: despierto todo el mes se come las 750 horas de Render.
 
-**El uso real de PROD** (19/10, unos minutos de uso + `/api/falla`):
+**El uso real de PROD**:
 
-- **Más usada y más lenta**: `GET /api/reservas`. Fueron 5 pedidos de **20 ms a 141 ms**, la
-  misma consulta con 7 veces de diferencia. Es la ruta de *Mis reservas* y del panel de admin.
-  `POST /api/reservas` tardó 26 ms.
-- **El error**: `Error: Falla de prueba del TP9` en Issues, con la ruta (`GET /api/falla`), el
-  archivo y la línea, y el **release** = el commit de la imagen (`e7c27a4`). Lo pongo en
-  `instrument.ts` con `APP_COMMIT`, así un error dice qué versión lo produjo.
-- **El front**: las cargas de página llegaron hasta ~2,7 s. Es el primer pedido después de que el
-  servicio free se durmió, la misma clase de dato que la guía midió en la app de la cátedra.
+- **Más usada y más lenta**: `GET /api/reservas`, de **20 ms a 141 ms** (la misma consulta, 7
+  veces de diferencia). Es *Mis reservas* y el panel del admin.
+- **El error**: en Issues, con ruta, archivo, línea y el **release** = el commit de la imagen
+  (`e7c27a4`), que pongo con `APP_COMMIT`.
+- **El front**: cargas de hasta ~2,7 s, el primer pedido después de que el servicio se durmió.
 
-De ahí salió la tarjeta **#64**: investigar la traza de 141 ms de `GET /api/reservas` (¿base o
-Express?) y, según lo que muestre, un índice en `Reserva(usuarioId, inicio)`.
+**Tarjeta #64**: investigar la traza de 141 ms (¿base o Express?) y, según eso, un índice en
+`Reserva(usuarioId, inicio)`.
 
-**Qué ve cada uno y qué no.** El monitor ve que la api contesta. No ve que una ruta tire 500 ni
-que tarde, y tampoco ve el front: mira `/api/health`. Sentry ve errores, demoras y uso desde
-adentro. Pero si el proceso está muerto, no manda nada: no se entera de una caída. Por eso van
-juntos.
+**Qué ve cada uno**: el monitor ve que la api contesta, pero no un 500 en una ruta, ni demoras,
+ni el front. Sentry ve errores, demoras y uso desde adentro, pero si el proceso está muerto no
+manda nada. Por eso van juntos.
 
 ### Decisiones de Sentry
 
-- **El DSN del back va por el entorno** (`SENTRY_DSN`), y **sólo** en el servicio de PROD. Sin la
-  variable, `Sentry.init` queda apagado: los tests, mi máquina y QA no mandan nada. Así las
-  corridas de e2e contra QA no ensucian el «uso real».
-- **El DSN del front va escrito en el código** (`src/instrumentation-client.ts`). No es un
-  secreto: sólo sirve para mandar datos a ese proyecto, no para leerlos, y de todos modos viaja en
-  el JavaScript que baja cualquier navegador. La imagen del front es la misma en QA y PROD, así que
-  el `environment` es el hostname, y en localhost está apagado.
-- **`instrument.ts` es el primer import de `index.ts`**. Sentry mide las rutas envolviendo Express
-  cuando se carga: si Express ya estaba cargado, los errores llegan igual pero las demoras por
-  ruta no.
-- **`setupExpressErrorHandler` va entre las rutas y mi handler de errores**: Sentry ve la
-  excepción y mi handler sigue respondiendo el JSON de siempre.
-- **`/api/falla` vivió un solo PR** (#36) y se fue en el de cierre.
+- **DSN del back por variable** (`SENTRY_DSN`), **sólo en PROD**: tests, local y QA no mandan
+  nada, así las e2e no ensucian el uso real.
+- **DSN del front escrito en el código**: no es un secreto, sólo sirve para mandar datos, no para
+  leerlos, y viaja igual en el JavaScript del navegador.
+- **`instrument.ts` es el primer import de `index.ts`**: Sentry envuelve Express al cargarse; si
+  Express ya estaba cargado, se pierden las demoras por ruta.
+- **El endpoint de prueba del error** vivió un solo PR (#36) y se sacó en el de cierre (#65).
 
 ### CodeQL: lo que encontró y qué hice
 
-El primer análisis dio **6 hallazgos**:
-
 - **4 × `actions/missing-workflow-permissions`** (`deploy-qa`, `integracion`, `e2e`,
-  `deploy-prod`). Esos jobs no declaraban `permissions:` y corrían con el default del repo.
-  - OWASP: A01 *Broken Access Control*, por mínimo privilegio. No es explotable hoy, porque el
-    default de mi repo es de sólo lectura, pero depende de un setting que cualquiera puede cambiar.
-  - **Arreglado**: `contents: read` en los cuatro. Ninguno escribe nada con el token de GitHub:
-    los deploys son `curl` a los hooks de Render.
-- **`js/polynomial-redos`** en la regex de email (`services/auth.ts`). **Es explotable.**
-  - Con un «email» `a@` seguido de miles de puntos, la regex tarda el cuadrado del largo. Medí
-    215 ms con 20.000 caracteres. Con los 100 KB que acepta `express.json` son ~5 s de event loop
-    bloqueado por pedido, contra `/login` y sin estar logueado: un DoS con un solo cliente.
-  - OWASP: A06/A04, diseño inseguro de una validación.
-  - **Arreglado**: tope de 254 caracteres (RFC 5321) **antes** de la regex, y un test que manda el
-    ataque y exige que conteste en menos de 50 ms.
-- **`js/missing-rate-limiting`** en `POST /api/auth/login`. Es real: nada frena probar passwords
-  sin parar.
-  - OWASP: A07 *Identification and Authentication Failures*.
-  - **No lo arreglé en este TP**: la mitigación (un rate limit por IP) tiene un detalle con el
-    `trust proxy` de Render que quiero probar aparte. Queda abierto en *Code scanning*, a propósito.
+  `deploy-prod`): no declaraban `permissions:`. No es explotable hoy (el default del repo es
+  lectura), pero depende de un setting. **Arreglado**: `contents: read`.
+- **`js/polynomial-redos`** en la regex de email. **Es explotable**: `a@` seguido de miles de
+  puntos tarda el cuadrado del largo (215 ms con 20.000 caracteres; ~5 s con los 100 KB que acepta
+  `express.json`), contra `/login` y sin sesión: un DoS con un solo cliente. **Arreglado**: tope
+  de 254 caracteres antes de la regex y un test que manda el ataque y exige menos de 50 ms.
+- **`js/missing-rate-limiting`** en `POST /api/auth/login`: es real. **No lo arreglé en este TP**
+  (el rate limit por IP tiene un detalle con el `trust proxy` de Render); queda abierto a propósito.
 
 ### Problemas encontrados
 
-**a) Un deploy a PROD trabado 35 minutos por una aprobación de hace 4 días.** La corrida de Sentry
-pasó QA, integración y e2e a las 18:05, y `deploy-prod` no arrancó. GitHub decía «waiting for
-deploy-prod (CI #47) to complete». CI #47 era la corrida del merge del TP8, del 15/10. Seguía
-esperando review y tenía tomado el grupo de `concurrency: deploy-prod`. La rechacé y la nueva
-arrancó al instante. Es el riesgo que había anotado en el TP6 («una corrida vieja esperando review
-sobrevive»), ahora con el costo medido. Está escrito como postmortem en `postmortem.md`.
-
-**b) La aprobación que no fue.** Creí haber aprobado el deploy, pero la API de GitHub mostraba la
-corrida **sin ninguna aprobación**: el botón que importaba era el de CI #47 (rechazar), no el de
-la nueva.
-
-**c) «No aparece nada en Sentry».** Era (a): PROD seguía en el commit viejo, sin Sentry, y
-`/api/falla` daba 404. La pantalla de Sentry de «instalá el SDK» confunde, porque el SDK ya estaba
-en el código. Lo que faltaba era que la imagen nueva llegara a PROD.
-
-**d) Activar Advanced Security fue a mano.** Prender Dependabot alerts, security updates y CodeQL
-desde la API con `gh` quedó bloqueado por los permisos del asistente. Lo hice desde *Settings*.
+- **Un deploy a PROD trabado 35 minutos**: `deploy-prod` no arrancaba porque una corrida del TP8,
+  de 4 días antes, seguía esperando review y tenía tomado el grupo de `concurrency: deploy-prod`.
+  La rechacé y la nueva arrancó. Es el riesgo anotado en el TP6, ahora medido; está como
+  postmortem en `postmortem.md`.
+- **«No aparece nada en Sentry»**: era lo anterior. PROD seguía en el commit viejo, sin Sentry.
+- **Advanced Security se prendió a mano** desde *Settings*: por API quedó bloqueado por permisos.
 
 ### Uso de IA — TP9
 
-**Qué se hizo con asistencia de IA (Claude Code).**
-- El `dependabot.yml` y el código de Sentry en back y front: `instrument.ts`,
-  `instrumentation-client.ts` y el handler de errores.
-- El endpoint `/api/falla` y su retiro.
-- El análisis de los 6 hallazgos de CodeQL, el arreglo de los `permissions:` y del ReDoS (con su
-  test), y la medición del ReDoS.
-- El diagnóstico del deploy trabado, leyendo las corridas y las aprobaciones con la API de GitHub.
-- La elección del PR de Dependabot, la tarjeta #64, el `postmortem.md` y la redacción de esta
-  sección.
+**Con asistencia de IA (Claude Code)**: el `dependabot.yml`, el código de Sentry, el endpoint de
+prueba y su retiro, el análisis de CodeQL y los arreglos (permisos y ReDoS con su test), el
+diagnóstico del deploy trabado, la tarjeta #64, el `postmortem.md` y la redacción.
 
-**Qué se hizo a mano.**
-- Crear la cuenta y los proyectos de Sentry, y cargar `SENTRY_DSN` en Render.
-- Prender las protecciones en *Settings*.
-- La cuenta y el monitor de UptimeRobot, el *Suspend*/*Resume* y pausarlo.
-- Los merges, rechazar CI #47 y aprobar el deploy.
-- Usar la app de PROD y provocar el error.
+**A mano**: las cuentas de Sentry y UptimeRobot, `SENTRY_DSN` en Render, las protecciones en
+*Settings*, el *Suspend*/*Resume* y pausar el monitor, los merges y aprobaciones, y usar PROD y
+provocar el error.
 
-**Cómo se verificó.**
-- Antes del PR, el back levantado en local con un DSN de prueba: `/api/falla` → 500 con Express
-  instrumentado, y `HEAD /api/health` → 200.
-- Los 76→78 tests del back y los 66 del front, `tsc`, ESLint y `next build`, comprobando que el
-  init de Sentry quedara en el bundle.
-- En PROD, el error en Issues con el release `e7c27a4` y las rutas en *Backend Overview*.
-- Las horas DOWN/UP, en los mails del monitor.
-
-**Lo que tengo que poder explicar sin mirar el archivo**:
-- qué mira y qué **no** mira cada pieza: Dependabot, CodeQL, push protection, el monitor y Sentry;
-- por qué `instrument.ts` va primero;
-- por qué el DSN del front puede estar en un repo público y el del back no va en el código;
-- por qué el #63 era seguro y los majors no;
-- por qué el ReDoS es explotable;
-- qué tiene que ver `concurrency` con el deploy trabado.
+**Cómo lo verifiqué**: el back en local con un DSN de prueba antes del PR; tests, `tsc`, ESLint
+y `next build`; en PROD, el error en Issues con el release `e7c27a4`; las horas DOWN/UP en los
+mails del monitor.
